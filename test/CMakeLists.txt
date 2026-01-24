@@ -15,6 +15,8 @@ add_executable(oram_tests
     core/bucket_test.cpp
     core/ram_test.cpp
     network/net_io_test.cpp
+    crypto/aes_ctr_test.cpp
+    path_oram/path_oram_test.cpp
 )
 target_link_libraries(oram_tests PRIVATE
     oram_core
