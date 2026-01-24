@@ -23,8 +23,3 @@ This project is licensed under the [LICENSE NAME] - see the [LICENSE.md](link-to
 
 ## Acknowledgments
 - List any collaborators, third-party resources, or inspirational projects here.
-
-## Contact
-- **Project Lead**: [Charlie]
-- **Email**: [changqi@vt.edu]
-- **Project Link**: [GitHub Project Link]
