@@ -117,6 +117,20 @@ std::vector<size_t> PathORAMClient::GetPathIndices(uint64_t leaf) {
     return indices;
 }
 
+size_t PathORAMClient::GetBucketIndex(uint64_t leaf, size_t level) {
+    // level 0 = root (index 0), level tree_height_ = leaf level
+    // Navigate from root down to the given level towards the target leaf.
+    // At level L the leaf index (from GetLeafOffset) encodes the path:
+    //   bit (tree_height_ - 1 - l) of `leaf` indicates left/right child at level l.
+    size_t node = 0;  // start at root
+    for (size_t l = 0; l < level; ++l) {
+        // Determine which child to follow based on `leaf`'s bit at position (tree_height_ - 1 - l)
+        size_t bit = (leaf >> (tree_height_ - 1 - l)) & 1;
+        node = 2 * node + 1 + bit;  // left child = 2n+1, right child = 2n+2
+    }
+    return node;
+}
+
 void PathORAMClient::ReadPath(uint64_t leaf) {
     auto path = GetPathIndices(leaf);
 
