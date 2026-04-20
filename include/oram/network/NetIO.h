@@ -18,6 +18,8 @@ class NetIO : public IOChannel<NetIO> {
     void Flush();
     void SetNoDelay();
     void SetDelay();
+    void SendVec(const std::vector<uint8_t>& data);
+    void RecvVec(std::vector<uint8_t>& data);
 
     // Internal methods used by IOChannel (CRTP)
     void SendDataInternal(const void* data, size_t len);

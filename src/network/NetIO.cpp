@@ -99,6 +99,23 @@ void NetIO::SetDelay() {
     setsockopt(consocket_, IPPROTO_TCP, TCP_NODELAY, &zero, sizeof(zero));
 }
 
+void NetIO::SendVec(const std::vector<uint8_t>& data) {
+    const uint64_t size = data.size();
+    SendData(&size, sizeof(size));
+    if (size > 0) {
+        SendData(data.data(), size);
+    }
+}
+
+void NetIO::RecvVec(std::vector<uint8_t>& data) {
+    uint64_t size = 0;
+    RecvData(&size, sizeof(size));
+    data.resize(size);
+    if (size > 0) {
+        RecvData(data.data(), size);
+    }
+}
+
 void NetIO::SendDataInternal(const void* data, size_t len) {
     size_t sent = 0;
     while (sent < len) {
