@@ -7,15 +7,6 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# Compiler warnings
-add_compile_options(
-    -Wall -Wextra -Wpedantic -Werror
-    $<$<CONFIG:Debug>:-fsanitize=address,undefined>
-)
-add_link_options(
-    $<$<CONFIG:Debug>:-fsanitize=address,undefined>
-)
-
 # Find OpenSSL
 find_package(OpenSSL REQUIRED)
 
@@ -39,7 +30,15 @@ foreach(tfhe_target
         tfhe-spqlios-avx
         tfhe-spqlios-fma)
     if(TARGET ${tfhe_target})
-        target_compile_options(${tfhe_target} PRIVATE -Wno-error)
+        target_compile_options(${tfhe_target} PRIVATE
+            -Wno-error
+            -fno-sanitize=undefined
+            -fno-sanitize=signed-integer-overflow
+        )
+        target_link_options(${tfhe_target} PRIVATE
+            -fno-sanitize=undefined
+            -fno-sanitize=signed-integer-overflow
+        )
     endif()
 endforeach()
 
@@ -50,6 +49,17 @@ elseif(TARGET tfhe-spqlios-avx)
 else()
     set(ONION_RING_TFHE_TARGET tfhe-nayuki-portable)
 endif()
+
+# Compiler warnings for this project only. These are intentionally added
+# after FetchContent_MakeAvailable(tfhe) so the external TFHE build does not
+# inherit our sanitizer policy.
+add_compile_options(
+    -Wall -Wextra -Wpedantic -Werror
+    $<$<CONFIG:Debug>:-fsanitize=address,undefined>
+)
+add_link_options(
+    $<$<CONFIG:Debug>:-fsanitize=address,undefined>
+)
 
 # Library target - Core ORAM components
 add_library(oram_core
