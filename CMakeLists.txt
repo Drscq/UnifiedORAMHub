@@ -82,6 +82,7 @@ target_link_libraries(oram_core PUBLIC
 
 add_library(onion_ring_core
     src/onion_ring/TFHEAdapter.cpp
+    src/onion_ring/HomOps.cpp
 )
 target_include_directories(onion_ring_core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
