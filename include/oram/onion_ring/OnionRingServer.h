@@ -30,7 +30,11 @@ class OnionRingServer {
 
     std::vector<size_t> GetPathIndices(uint64_t leaf) const;
     void HandleAccess();
+    void HandleClearPath();
+    void HandleReadBucket();
     void HandleWriteSlot();
+    void HandleEvictTriplet();
+    void HandleLeafRefresh();
 };
 
 }  // namespace oram::onion_ring
