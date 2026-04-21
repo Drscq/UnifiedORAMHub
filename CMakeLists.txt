@@ -17,7 +17,24 @@ FetchContent_Declare(
     SOURCE_SUBDIR  src
 )
 set(ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+# Disable the nayuki FFT backends: fft_processor_nayuki.cpp uses `1i` (a GNU
+# C imaginary suffix) which GCC 14 rejects in C++17 mode.  The spqlios
+# backend is always preferred on x86 anyway, so nayuki is dead code for us.
+set(ENABLE_NAYUKI_PORTABLE OFF CACHE BOOL "" FORCE)
+set(ENABLE_NAYUKI_AVX      OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(tfhe)
+
+
+# fft_processor_nayuki.cpp uses the `1i` complex imaginary literal which is
+# a GNU extension.  GCC 14 in strict C++17 mode rejects it with "unable to
+# find numeric literal operator 'operator""i'".  We fix this by explicitly
+# overriding the language standard to gnu++17 for the two nayuki targets.
+# The -std=gnu++17 flag appended last wins over the earlier -std=c++17.
+foreach(nayuki_target tfhe-fft-nayuki-portable tfhe-fft-nayuki-avx)
+    if(TARGET ${nayuki_target})
+        target_compile_options(${nayuki_target} PRIVATE -std=gnu++17)
+    endif()
+endforeach()
 
 foreach(tfhe_target
         tfhe-core
