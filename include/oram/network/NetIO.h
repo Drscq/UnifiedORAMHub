@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -18,6 +17,8 @@ class NetIO : public IOChannel<NetIO> {
     void Flush();
     void SetNoDelay();
     void SetDelay();
+    void SendVec(const std::vector<uint8_t>& data);
+    void RecvVec(std::vector<uint8_t>& data);
 
     // Internal methods used by IOChannel (CRTP)
     void SendDataInternal(const void* data, size_t len);
@@ -27,12 +28,6 @@ class NetIO : public IOChannel<NetIO> {
     bool is_server_;
     int mysocket_ = -1;
     int consocket_ = -1;
-    FILE* stream_ = nullptr;
-    char* buffer_ = nullptr;
-    bool has_sent_ = false;
-
-    // Constants
-    static constexpr int kNetworkBufferSize = 65536;
 };
 
 }  // namespace oram::network

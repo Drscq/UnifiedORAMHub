@@ -59,3 +59,31 @@ TEST(NetIOTest, Sync) {
     // If we reach here without hanging/crashing, Sync worked
     SUCCEED();
 }
+
+TEST(NetIOTest, SendVecRecvVecRoundTripLargePayload) {
+    int port = 12347;
+    std::string address = "127.0.0.1";
+    std::vector<uint8_t> payload(128 * 1024);
+    for (size_t i = 0; i < payload.size(); ++i) {
+        payload[i] = static_cast<uint8_t>(i & 0xFF);
+    }
+
+    std::thread server_thread([&]() {
+        oram::network::NetIO server(address, port, true, true);
+        std::vector<uint8_t> received;
+        server.RecvVec(received);
+        server.SendVec(received);
+    });
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    oram::network::NetIO client(address, port, false, true);
+    client.SendVec(payload);
+
+    std::vector<uint8_t> echo;
+    client.RecvVec(echo);
+
+    EXPECT_EQ(echo, payload);
+
+    server_thread.join();
+}

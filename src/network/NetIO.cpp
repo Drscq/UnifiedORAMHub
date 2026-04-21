@@ -7,6 +7,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
@@ -59,20 +60,16 @@ NetIO::NetIO(const std::string& address, int port, bool is_server, bool quiet)
     }
 
     SetNoDelay();
-    stream_ = fdopen(consocket_, "wb+");
-    buffer_ = new char[kNetworkBufferSize];
-    memset(buffer_, 0, kNetworkBufferSize);
-    setvbuf(stream_, buffer_, _IOFBF, kNetworkBufferSize);  // Full buffering using our buffer
-
     if (!quiet) {
         std::cout << "NetIO connected\n";
     }
 }
 
 NetIO::~NetIO() {
-    Flush();
-    if (stream_) fclose(stream_);  // fclose closes the file descriptor (consocket_) too
-    delete[] buffer_;
+    if (consocket_ >= 0) {
+        close(consocket_);
+        consocket_ = -1;
+    }
 }
 
 void NetIO::Sync() {
@@ -87,7 +84,7 @@ void NetIO::Sync() {
     }
 }
 
-void NetIO::Flush() { fflush(stream_); }
+void NetIO::Flush() {}
 
 void NetIO::SetNoDelay() {
     const int one = 1;
@@ -99,34 +96,48 @@ void NetIO::SetDelay() {
     setsockopt(consocket_, IPPROTO_TCP, TCP_NODELAY, &zero, sizeof(zero));
 }
 
+void NetIO::SendVec(const std::vector<uint8_t>& data) {
+    const uint64_t size = data.size();
+    SendData(&size, sizeof(size));
+    if (size > 0) {
+        SendData(data.data(), size);
+    }
+}
+
+void NetIO::RecvVec(std::vector<uint8_t>& data) {
+    uint64_t size = 0;
+    RecvData(&size, sizeof(size));
+    data.resize(size);
+    if (size > 0) {
+        RecvData(data.data(), size);
+    }
+}
+
 void NetIO::SendDataInternal(const void* data, size_t len) {
     size_t sent = 0;
     while (sent < len) {
-        size_t res = fwrite((char*)data + sent, 1, len - sent, stream_);
+        const ssize_t res =
+            send(consocket_, static_cast<const char*>(data) + sent, len - sent, MSG_NOSIGNAL);
         if (res > 0) {
-            sent += res;
-        } else {
-            // Error handling could be improved
+            sent += static_cast<size_t>(res);
+        } else if (res == 0) {
             throw std::runtime_error("NetIO send failed");
+        } else if (errno != EINTR) {
+            throw std::runtime_error("NetIO send failed: " + std::string(strerror(errno)));
         }
     }
-    has_sent_ = true;
 }
 
 void NetIO::RecvDataInternal(void* data, size_t len) {
-    if (has_sent_) {
-        Flush();
-    }
-    has_sent_ = false;
-
     size_t received = 0;
     while (received < len) {
-        size_t res = fread((char*)data + received, 1, len - received, stream_);
+        const ssize_t res = recv(consocket_, static_cast<char*>(data) + received, len - received, 0);
         if (res > 0) {
-            received += res;
-        } else {
-            // Error handling
+            received += static_cast<size_t>(res);
+        } else if (res == 0) {
             throw std::runtime_error("NetIO recv failed");
+        } else if (errno != EINTR) {
+            throw std::runtime_error("NetIO recv failed: " + std::string(strerror(errno)));
         }
     }
 }

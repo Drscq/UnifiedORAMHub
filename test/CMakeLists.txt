@@ -26,3 +26,18 @@ target_link_libraries(oram_tests PRIVATE
 )
 
 gtest_discover_tests(oram_tests)
+
+add_executable(onion_ring_tests
+    onion_ring/tfhe_adapter_test.cpp
+    onion_ring/hom_ops_test.cpp
+    onion_ring/waksman_test.cpp
+    onion_ring/onion_ring_e2e_test.cpp
+)
+target_link_libraries(onion_ring_tests PRIVATE
+    onion_ring_core
+    GTest::gtest
+    GTest::gmock
+    GTest::gtest_main
+)
+
+gtest_discover_tests(onion_ring_tests)
