@@ -84,6 +84,8 @@ add_library(onion_ring_core
     src/onion_ring/TFHEAdapter.cpp
     src/onion_ring/HomOps.cpp
     src/onion_ring/WaksmanNetwork.cpp
+    src/onion_ring/OnionRingServer.cpp
+    src/onion_ring/OnionRingClient.cpp
 )
 target_include_directories(onion_ring_core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
