@@ -13,3 +13,8 @@
 - [x] Task 11: Add direct swap-bit transport helpers for server-side permutation
 - [x] Task 12: Restore live triplet eviction and leaf refresh to the server-side homomorphic path
 - [x] Task 13: Run the long-horizon eviction stress suite and full Onion Ring verification
+- [x] Task 14: Explore packed-swap-bit follow-up context and constraints
+- [x] Task 15: Confirm packed transport design direction with user
+- [x] Task 16: Present implementation approaches and recommended design
+- [ ] Task 17: Write packed-transport design doc
+- [ ] Task 18: Create implementation plan for packed transport and HomExpand follow-up
