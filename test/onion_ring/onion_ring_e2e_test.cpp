@@ -32,6 +32,17 @@ RuntimeConfig EvictingConfig() {
     return cfg;
 }
 
+RuntimeConfig LongRunConfig() {
+    RuntimeConfig cfg;
+    cfg.z = 2;
+    cfg.s = 2;
+    cfg.a = 3;
+    cfg.tree_height = 2;
+    cfg.num_blocks = 4;
+    cfg.block_size = 16;
+    return cfg;
+}
+
 std::vector<uint8_t> MakeBlock(size_t block_size, uint8_t seed) {
     std::vector<uint8_t> block(block_size, 0);
     for (size_t i = 0; i < block.size(); ++i) {
@@ -178,6 +189,33 @@ TEST_F(OnionRingE2ETest, MixedAccessesRemainCorrectAfterRefreshAndEviction) {
         const uint64_t addr = (round * 5) % config_.num_blocks;
         if (round % 2 == 0) {
             oracle[addr] = MakeBlock(config_.block_size, static_cast<uint8_t>(0x40 + round));
+            client.Write(addr, oracle[addr]);
+        } else {
+            EXPECT_EQ(client.Read(addr), oracle[addr]);
+        }
+    }
+
+    for (size_t addr = 0; addr < config_.num_blocks; ++addr) {
+        EXPECT_EQ(client.Read(addr), oracle[addr]);
+    }
+}
+
+TEST_F(OnionRingE2ETest, MoreThanThreeHundredEvictionWindowsPreserveRewrittenBlocks) {
+    StartServer(LongRunConfig());
+
+    OnionRingClient client("127.0.0.1", port_, config_);
+    std::vector<std::vector<uint8_t>> oracle(config_.num_blocks);
+    for (size_t addr = 0; addr < config_.num_blocks; ++addr) {
+        oracle[addr] = MakeBlock(config_.block_size, static_cast<uint8_t>(0x30 + addr * 9));
+        client.Write(addr, oracle[addr]);
+    }
+
+    const size_t total_accesses = config_.a * 301 + 19;
+    for (size_t round = 0; round < total_accesses; ++round) {
+        const uint64_t addr = (round * 5 + 1) % config_.num_blocks;
+        if (round % 3 == 0 || round % 7 == 0) {
+            oracle[addr] =
+                MakeBlock(config_.block_size, static_cast<uint8_t>((round * 11 + addr * 17) & 0xFF));
             client.Write(addr, oracle[addr]);
         } else {
             EXPECT_EQ(client.Read(addr), oracle[addr]);

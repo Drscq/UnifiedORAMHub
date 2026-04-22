@@ -9,6 +9,7 @@
 
 #include "oram/network/NetIO.h"
 #include "oram/onion_ring/OnionBucket.h"
+#include "oram/onion_ring/PermGen.h"
 #include "oram/onion_ring/TFHEAdapter.h"
 #include "oram/onion_ring/WaksmanNetwork.h"
 
@@ -121,6 +122,53 @@ TEST(WaksmanTest, EvalWaksmanMatchesPermutationForEncryptedBlocks) {
     EXPECT_EQ(DecryptBlock(encrypted_blocks[1], ctx, cfg.block_size), BlockByte(0x01, cfg.block_size));
     EXPECT_EQ(DecryptBlock(encrypted_blocks[2], ctx, cfg.block_size), BlockByte(0x04, cfg.block_size));
     EXPECT_EQ(DecryptBlock(encrypted_blocks[3], ctx, cfg.block_size), BlockByte(0x02, cfg.block_size));
+}
+
+TEST(PermGenTest, DirectSwapBitPayloadDrivesServerSidePermutationAcrossContexts) {
+    RuntimeConfig cfg;
+    cfg.block_size = 16;
+    auto client_ctx = TFHEContext::CreateClientContext(cfg);
+    auto server_ctx = TFHEContext::CreateServerContext(cfg);
+
+    std::vector<size_t> permutation = {5, 2, 7, 1, 6, 0, 4, 3};
+    WaksmanNetwork network(permutation.size());
+    SwapBitPayload payload = BuildDirectSwapBitPayload(permutation, client_ctx);
+
+    EXPECT_EQ(payload.BitCount(), network.NumGates());
+
+    std::vector<RLWECiphertext> server_blocks;
+    std::vector<std::vector<uint8_t>> expected_blocks;
+    for (uint8_t value = 1; value <= permutation.size(); ++value) {
+        RLWECiphertext client_block = EncryptBlock(BlockByte(value * 0x11, cfg.block_size), client_ctx);
+        server_blocks.emplace_back(
+            RLWECiphertext::Deserialize(client_block.Serialize(), server_ctx.tlwe_params));
+        expected_blocks.push_back(BlockByte(value * 0x11, cfg.block_size));
+    }
+
+    std::vector<RGSWCiphertext> server_swap_bits =
+        DeserializeDirectSwapBitPayload(payload, server_ctx.tgsw_params);
+
+    std::vector<TLweSample*> block_ptrs;
+    block_ptrs.reserve(server_blocks.size());
+    for (auto& block : server_blocks) {
+        block_ptrs.push_back(block.Get());
+    }
+
+    std::vector<TGswSample*> swap_ptrs;
+    swap_ptrs.reserve(server_swap_bits.size());
+    for (auto& bit : server_swap_bits) {
+        swap_ptrs.push_back(bit.Get());
+    }
+
+    WaksmanNetwork::EvalWaksman(block_ptrs, swap_ptrs, server_ctx.tgsw_params);
+
+    std::vector<std::vector<uint8_t>> next_expected(expected_blocks.size());
+    for (size_t dest = 0; dest < permutation.size(); ++dest) {
+        next_expected[dest] = expected_blocks[permutation[dest]];
+    }
+    for (size_t i = 0; i < next_expected.size(); ++i) {
+        EXPECT_EQ(DecryptBlock(server_blocks[i], client_ctx, cfg.block_size), next_expected[i]);
+    }
 }
 
 TEST(WaksmanTest, RepeatedEvalWaksmanPreservesEncryptedBlocksAcrossRounds) {

@@ -4,6 +4,7 @@
 #include <stdexcept>
 
 #include "tlwe_functions.h"
+#include "oram/onion_ring/PermGen.h"
 #include "oram/onion_ring/WaksmanNetwork.h"
 
 namespace oram::onion_ring {
@@ -20,18 +21,6 @@ std::vector<uint64_t> DeserializeUint64Vector(const std::vector<uint8_t>& bytes)
         std::memcpy(values.data(), bytes.data(), bytes.size());
     }
     return values;
-}
-
-std::vector<RGSWCiphertext> ReceiveSwapBits(network::NetIO* net_io, uint64_t bit_count,
-                                            const TGswParams* params) {
-    std::vector<RGSWCiphertext> swap_bits;
-    swap_bits.reserve(bit_count);
-    for (uint64_t i = 0; i < bit_count; ++i) {
-        std::vector<uint8_t> bytes;
-        net_io->RecvVec(bytes);
-        swap_bits.emplace_back(RGSWCiphertext::Deserialize(bytes, params));
-    }
-    return swap_bits;
 }
 
 std::vector<RLWECiphertext> AssembleChildSlots(const OnionBucket& source_bucket,
@@ -204,9 +193,8 @@ void OnionRingServer::HandleEvictTriplet() {
         const auto source_slots = DeserializeUint64Vector(source_bytes);
         const auto child_slots = DeserializeUint64Vector(child_bytes);
 
-        uint64_t bit_count = 0;
-        net_io_->RecvData(&bit_count, sizeof(bit_count));
-        auto swap_bits = ReceiveSwapBits(net_io_.get(), bit_count, ctx_.tgsw_params);
+        auto swap_bits =
+            DeserializeDirectSwapBitPayload(RecvDirectSwapBitPayload(net_io_.get()), ctx_.tgsw_params);
 
         std::vector<RLWECiphertext> assembled =
             AssembleChildSlots(tree_[source_idx], source_slots, tree_[child_idx], child_slots,
@@ -267,9 +255,8 @@ void OnionRingServer::HandleLeafRefresh() {
         refreshed.emplace_back(RLWECiphertext::Deserialize(bytes, ctx_.tlwe_params));
     }
 
-    uint64_t bit_count = 0;
-    net_io_->RecvData(&bit_count, sizeof(bit_count));
-    auto swap_bits = ReceiveSwapBits(net_io_.get(), bit_count, ctx_.tgsw_params);
+    auto swap_bits =
+        DeserializeDirectSwapBitPayload(RecvDirectSwapBitPayload(net_io_.get()), ctx_.tgsw_params);
 
     std::vector<TLweSample*> slot_ptrs;
     slot_ptrs.reserve(refreshed.size());

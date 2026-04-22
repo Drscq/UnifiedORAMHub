@@ -1,13 +1,24 @@
 #include "oram/onion_ring/OnionRingClient.h"
 
 #include <algorithm>
+#include <cstring>
 #include <numeric>
 #include <random>
 #include <stdexcept>
 
+#include "oram/onion_ring/PermGen.h"
+
 namespace oram::onion_ring {
 
 namespace {
+
+struct ChildRoutingPlan {
+    std::vector<uint64_t> source_slots;
+    std::vector<uint64_t> child_slots;
+    std::vector<int64_t> input_ids;
+    std::vector<size_t> permutation;
+    SwapBitPayload swap_bits;
+};
 
 std::vector<size_t> MakeRandomPermutation(size_t size, std::mt19937_64* prng) {
     std::vector<size_t> permutation(size);
@@ -32,16 +43,12 @@ std::vector<int64_t> ApplyPermutationToIds(const std::vector<int64_t>& ids,
     return result;
 }
 
-RLWECiphertext CloneCiphertext(const RLWECiphertext& source, const TLweParams* params) {
-    RLWECiphertext copy(params);
-    tLweCopy(copy.Get(), source.Get(), params);
-    return copy;
-}
-
-RLWECiphertext ZeroCiphertext(const TLweParams* params) {
-    RLWECiphertext zero(params);
-    tLweClear(zero.Get(), params);
-    return zero;
+std::vector<uint8_t> SerializeUint64Vector(const std::vector<uint64_t>& values) {
+    std::vector<uint8_t> bytes(values.size() * sizeof(uint64_t));
+    if (!bytes.empty()) {
+        std::memcpy(bytes.data(), values.data(), bytes.size());
+    }
+    return bytes;
 }
 
 }  // namespace
@@ -137,23 +144,6 @@ RLWECiphertext OnionRingClient::FetchPathSum(uint64_t leaf, const std::vector<si
     return RLWECiphertext::Deserialize(bytes, ctx_.tlwe_params);
 }
 
-std::vector<RLWECiphertext> OnionRingClient::FetchBucketCiphertexts(size_t bucket_idx) {
-    char command = 'R';
-    uint64_t bucket_u64 = bucket_idx;
-    net_io_->SendData(&command, 1);
-    net_io_->SendData(&bucket_u64, sizeof(bucket_u64));
-    net_io_->Flush();
-
-    std::vector<RLWECiphertext> ciphertexts;
-    ciphertexts.reserve(config_.BucketSlots());
-    for (size_t slot = 0; slot < config_.BucketSlots(); ++slot) {
-        std::vector<uint8_t> bytes;
-        net_io_->RecvVec(bytes);
-        ciphertexts.emplace_back(RLWECiphertext::Deserialize(bytes, ctx_.tlwe_params));
-    }
-    return ciphertexts;
-}
-
 void OnionRingClient::ClearPathSlots(uint64_t leaf, const std::vector<size_t>& selections) {
     char command = 'C';
     net_io_->SendData(&command, 1);
@@ -189,125 +179,120 @@ void OnionRingClient::WriteBackSlot(size_t bucket_idx, size_t slot_idx,
     }
 }
 
-void OnionRingClient::WriteBucketCiphertexts(size_t bucket_idx,
-                                             const std::vector<RLWECiphertext>& ciphertexts) {
-    if (ciphertexts.size() != config_.BucketSlots()) {
-        throw std::invalid_argument("Bucket ciphertext count mismatch");
-    }
-    for (size_t slot = 0; slot < ciphertexts.size(); ++slot) {
-        WriteBackSlot(bucket_idx, slot, ciphertexts[slot]);
-    }
-}
-
 void OnionRingClient::TripletEvict(size_t source_idx, size_t left_idx, size_t right_idx) {
     const size_t parent_level = GetNodeLevel(source_idx);
     const size_t child_bit_shift = config_.tree_height - parent_level - 1;
     const size_t bucket_slots = config_.BucketSlots();
 
-    // The prototype keeps the TFHE/Waksman server-side machinery implemented and tested,
-    // but rebuilds triplet outputs client-side so the end-to-end protocol stays stable
-    // while the packed-swap-bit/HomExpand path remains a follow-up optimization.
-    const auto source_bucket = FetchBucketCiphertexts(source_idx);
-    const auto left_child_bucket = FetchBucketCiphertexts(left_idx);
-    const auto right_child_bucket = FetchBucketCiphertexts(right_idx);
-
-    std::vector<int64_t> left_input_ids;
-    std::vector<int64_t> right_input_ids;
-    std::vector<RLWECiphertext> left_input_ciphertexts;
-    std::vector<RLWECiphertext> right_input_ciphertexts;
-
-    for (size_t slot = 0; slot < bucket_slots; ++slot) {
-        const int64_t block_id = id_map_[source_idx][slot];
-        if (block_id < 0) {
-            continue;
+    // The server rebuilds each child bucket from the selected source and child slots,
+    // then applies the encrypted Waksman permutation described by these swap bits.
+    auto build_child_plan = [&](size_t child_idx, bool route_right) {
+        ChildRoutingPlan plan;
+        for (size_t slot = 0; slot < bucket_slots; ++slot) {
+            const int64_t block_id = id_map_[source_idx][slot];
+            if (block_id < 0) {
+                continue;
+            }
+            const bool goes_right = ((pos_map_[static_cast<size_t>(block_id)] >> child_bit_shift) &
+                                     1ULL) != 0;
+            if (goes_right == route_right) {
+                plan.source_slots.push_back(slot);
+                plan.input_ids.push_back(block_id);
+            }
         }
-        const bool goes_right = ((pos_map_[static_cast<size_t>(block_id)] >> child_bit_shift) &
-                                 1ULL) != 0;
-        if (goes_right) {
-            right_input_ids.push_back(block_id);
-            right_input_ciphertexts.emplace_back(CloneCiphertext(source_bucket[slot], ctx_.tlwe_params));
-        } else {
-            left_input_ids.push_back(block_id);
-            left_input_ciphertexts.emplace_back(CloneCiphertext(source_bucket[slot], ctx_.tlwe_params));
+        for (size_t slot = 0; slot < bucket_slots; ++slot) {
+            if (id_map_[child_idx][slot] >= 0) {
+                plan.child_slots.push_back(slot);
+                plan.input_ids.push_back(id_map_[child_idx][slot]);
+            }
         }
-    }
-
-    for (size_t slot = 0; slot < bucket_slots; ++slot) {
-        if (id_map_[left_idx][slot] >= 0) {
-            left_input_ids.push_back(id_map_[left_idx][slot]);
-            left_input_ciphertexts.emplace_back(
-                CloneCiphertext(left_child_bucket[slot], ctx_.tlwe_params));
+        if (plan.input_ids.size() > bucket_slots) {
+            throw std::runtime_error("Triplet eviction overflowed child bucket capacity");
         }
-        if (id_map_[right_idx][slot] >= 0) {
-            right_input_ids.push_back(id_map_[right_idx][slot]);
-            right_input_ciphertexts.emplace_back(
-                CloneCiphertext(right_child_bucket[slot], ctx_.tlwe_params));
+        while (plan.input_ids.size() < bucket_slots) {
+            plan.input_ids.push_back(-1);
         }
-    }
+        plan.permutation = MakeRandomPermutation(bucket_slots, &prng_);
+        plan.swap_bits = BuildDirectSwapBitPayload(plan.permutation, ctx_);
+        return plan;
+    };
 
-    if (left_input_ids.size() > bucket_slots || right_input_ids.size() > bucket_slots) {
-        throw std::runtime_error("Triplet eviction overflowed child bucket capacity");
-    }
+    ChildRoutingPlan left_plan = build_child_plan(left_idx, false);
+    ChildRoutingPlan right_plan = build_child_plan(right_idx, true);
 
-    while (left_input_ids.size() < bucket_slots) {
-        left_input_ids.push_back(-1);
-        left_input_ciphertexts.emplace_back(ZeroCiphertext(ctx_.tlwe_params));
-    }
-    while (right_input_ids.size() < bucket_slots) {
-        right_input_ids.push_back(-1);
-        right_input_ciphertexts.emplace_back(ZeroCiphertext(ctx_.tlwe_params));
-    }
+    char command = 'T';
+    uint64_t source_u64 = source_idx;
+    uint64_t left_u64 = left_idx;
+    uint64_t right_u64 = right_idx;
+    net_io_->SendData(&command, sizeof(command));
+    net_io_->SendData(&source_u64, sizeof(source_u64));
+    net_io_->SendData(&left_u64, sizeof(left_u64));
+    net_io_->SendData(&right_u64, sizeof(right_u64));
 
-    const auto left_permutation = MakeRandomPermutation(bucket_slots, &prng_);
-    const auto right_permutation = MakeRandomPermutation(bucket_slots, &prng_);
+    auto send_child_plan = [&](const ChildRoutingPlan& plan) {
+        net_io_->SendVec(SerializeUint64Vector(plan.source_slots));
+        net_io_->SendVec(SerializeUint64Vector(plan.child_slots));
+        SendDirectSwapBitPayload(net_io_.get(), plan.swap_bits);
+    };
 
-    std::vector<RLWECiphertext> left_output_ciphertexts;
-    std::vector<RLWECiphertext> right_output_ciphertexts;
-    left_output_ciphertexts.reserve(bucket_slots);
-    right_output_ciphertexts.reserve(bucket_slots);
-    for (size_t dest = 0; dest < bucket_slots; ++dest) {
-        left_output_ciphertexts.emplace_back(
-            CloneCiphertext(left_input_ciphertexts[left_permutation[dest]], ctx_.tlwe_params));
-        right_output_ciphertexts.emplace_back(
-            CloneCiphertext(right_input_ciphertexts[right_permutation[dest]], ctx_.tlwe_params));
+    send_child_plan(left_plan);
+    send_child_plan(right_plan);
+    net_io_->Flush();
+
+    char ack = 0;
+    net_io_->RecvData(&ack, sizeof(ack));
+    if (ack != 'K') {
+        throw std::runtime_error("Unexpected Onion Ring triplet-eviction acknowledgment");
     }
-
-    std::vector<RLWECiphertext> cleared_source;
-    cleared_source.reserve(bucket_slots);
-    for (size_t slot = 0; slot < bucket_slots; ++slot) {
-        cleared_source.emplace_back(ZeroCiphertext(ctx_.tlwe_params));
-    }
-
-    WriteBucketCiphertexts(left_idx, left_output_ciphertexts);
-    WriteBucketCiphertexts(right_idx, right_output_ciphertexts);
-    WriteBucketCiphertexts(source_idx, cleared_source);
 
     std::fill(id_map_[source_idx].begin(), id_map_[source_idx].end(), -1);
-    id_map_[left_idx] = ApplyPermutationToIds(left_input_ids, left_permutation);
-    id_map_[right_idx] = ApplyPermutationToIds(right_input_ids, right_permutation);
+    id_map_[left_idx] = ApplyPermutationToIds(left_plan.input_ids, left_plan.permutation);
+    id_map_[right_idx] = ApplyPermutationToIds(right_plan.input_ids, right_plan.permutation);
 }
 
 void OnionRingClient::LeafRefresh(size_t leaf_bucket_idx) {
-    // Leaf refresh follows the same client-assisted rebuild strategy as triplet eviction:
-    // decrypt, re-encrypt with fresh randomness, reshuffle locally, then write back.
-    const auto bucket = FetchBucketCiphertexts(leaf_bucket_idx);
+    // Leaf refresh is the one place where the client still decrypts/re-encrypts bucket contents;
+    // the final reshuffle is delegated back to the server through encrypted swap bits.
+    char command = 'L';
+    uint64_t bucket_u64 = leaf_bucket_idx;
+    net_io_->SendData(&command, sizeof(command));
+    net_io_->SendData(&bucket_u64, sizeof(bucket_u64));
+    net_io_->Flush();
+
+    char bucket_marker = 0;
+    net_io_->RecvData(&bucket_marker, sizeof(bucket_marker));
+    if (bucket_marker != 'B') {
+        throw std::runtime_error("Expected Onion Ring leaf bucket marker");
+    }
+
     std::vector<RLWECiphertext> refreshed_input;
     refreshed_input.reserve(config_.BucketSlots());
-    for (const auto& ciphertext : bucket) {
+    for (size_t slot = 0; slot < config_.BucketSlots(); ++slot) {
+        std::vector<uint8_t> bytes;
+        net_io_->RecvVec(bytes);
+        RLWECiphertext ciphertext = RLWECiphertext::Deserialize(bytes, ctx_.tlwe_params);
         const auto plaintext = DecryptBlock(ciphertext, ctx_, config_.block_size);
         refreshed_input.emplace_back(EncryptBlock(plaintext, ctx_));
     }
+
     const auto permutation = MakeRandomPermutation(config_.BucketSlots(), &prng_);
-    const auto current_ids = id_map_[leaf_bucket_idx];
-    std::vector<RLWECiphertext> refreshed_output;
-    refreshed_output.reserve(config_.BucketSlots());
-    for (size_t dest = 0; dest < permutation.size(); ++dest) {
-        refreshed_output.emplace_back(
-            CloneCiphertext(refreshed_input[permutation[dest]], ctx_.tlwe_params));
+    const SwapBitPayload swap_bits = BuildDirectSwapBitPayload(permutation, ctx_);
+
+    char refresh_command = 'F';
+    net_io_->SendData(&refresh_command, sizeof(refresh_command));
+    for (const auto& ciphertext : refreshed_input) {
+        net_io_->SendVec(ciphertext.Serialize());
+    }
+    SendDirectSwapBitPayload(net_io_.get(), swap_bits);
+    net_io_->Flush();
+
+    char ack = 0;
+    net_io_->RecvData(&ack, sizeof(ack));
+    if (ack != 'K') {
+        throw std::runtime_error("Unexpected Onion Ring leaf-refresh acknowledgment");
     }
 
-    WriteBucketCiphertexts(leaf_bucket_idx, refreshed_output);
-    id_map_[leaf_bucket_idx] = ApplyPermutationToIds(current_ids, permutation);
+    id_map_[leaf_bucket_idx] = ApplyPermutationToIds(id_map_[leaf_bucket_idx], permutation);
 }
 
 void OnionRingClient::Evict() {

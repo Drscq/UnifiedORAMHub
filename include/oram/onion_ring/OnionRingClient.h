@@ -45,10 +45,8 @@ class OnionRingClient : public core::RAM {
     size_t FindSlot(size_t bucket_idx, int64_t block_id) const;
     size_t FindFirstDummySlot(size_t bucket_idx) const;
     RLWECiphertext FetchPathSum(uint64_t leaf, const std::vector<size_t>& selections);
-    std::vector<RLWECiphertext> FetchBucketCiphertexts(size_t bucket_idx);
     void ClearPathSlots(uint64_t leaf, const std::vector<size_t>& selections);
     void WriteBackSlot(size_t bucket_idx, size_t slot_idx, const RLWECiphertext& ciphertext);
-    void WriteBucketCiphertexts(size_t bucket_idx, const std::vector<RLWECiphertext>& ciphertexts);
     void Evict();
     void TripletEvict(size_t source_idx, size_t left_idx, size_t right_idx);
     void LeafRefresh(size_t leaf_bucket_idx);

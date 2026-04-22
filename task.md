@@ -10,3 +10,6 @@
 - [x] Task 8: Implement leaf refresh and complete the protocol
 - [x] Task 9: Run full verification
 - [x] Task 10: Prepare the optimization follow-up
+- [x] Task 11: Add direct swap-bit transport helpers for server-side permutation
+- [x] Task 12: Restore live triplet eviction and leaf refresh to the server-side homomorphic path
+- [x] Task 13: Run the long-horizon eviction stress suite and full Onion Ring verification

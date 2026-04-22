@@ -84,6 +84,7 @@ add_library(onion_ring_core
     src/onion_ring/TFHEAdapter.cpp
     src/onion_ring/HomOps.cpp
     src/onion_ring/WaksmanNetwork.cpp
+    src/onion_ring/PermGen.cpp
     src/onion_ring/OnionRingServer.cpp
     src/onion_ring/OnionRingClient.cpp
 )
