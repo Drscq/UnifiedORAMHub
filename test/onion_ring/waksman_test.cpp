@@ -171,6 +171,19 @@ TEST(PermGenTest, DirectSwapBitPayloadDrivesServerSidePermutationAcrossContexts)
     }
 }
 
+TEST(PermGenTest, PackedSwapBitPayloadCompressesGateBitsIntoRlweCiphertexts) {
+    RuntimeConfig cfg;
+    cfg.block_size = 16;
+    auto ctx = TFHEContext::CreateClientContext(cfg);
+
+    std::vector<size_t> permutation = {5, 2, 7, 1, 6, 0, 4, 3};
+    const size_t gate_count = WaksmanNetwork(permutation.size()).NumGates();
+    PackedSwapBitPayload payload = BuildPackedSwapBitPayload(permutation, ctx);
+
+    EXPECT_LT(payload.ciphertexts.size(), gate_count);
+    EXPECT_EQ(payload.bit_count, gate_count);
+}
+
 TEST(WaksmanTest, RepeatedEvalWaksmanPreservesEncryptedBlocksAcrossRounds) {
     RuntimeConfig cfg;
     cfg.block_size = 16;

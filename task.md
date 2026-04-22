@@ -18,3 +18,11 @@
 - [x] Task 16: Present implementation approaches and recommended design
 - [x] Task 17: Write packed-transport design doc
 - [x] Task 18: Create implementation plan for packed transport and HomExpand follow-up
+- [x] Task 19: Add failing packed-transport and HomExpand tests
+- [ ] Task 20: Add expansion-bundle and packed-payload scaffolding (in progress)
+- [ ] Task 21: Add HomExpand public API and failing oracle-comparison tests
+- [ ] Task 22: Implement recursive RLWE expansion
+- [ ] Task 23: Implement RLWE-to-RGSW lift
+- [ ] Task 24: Route Onion Ring protocol handlers through packed transport
+- [ ] Task 25: Remove direct transport from the live path and tighten regression coverage
+- [ ] Task 26: Run full verification and prepare branch completion
