@@ -26,3 +26,12 @@
 - [x] Task 24: Tighten packed-path regression coverage and stress verification
 - [x] Task 25: Update README usage and manual validation notes for the packed path
 - [ ] Task 26: Return to the paper-faithful recursive RLWE coefficient-expansion follow-up
+
+## Paper-Faithful HomExpand Design Pass
+
+- [x] Explore project context
+- [x] Ask clarifying question
+- [x] Propose approaches and recommendation
+- [x] Present updated design for approval
+- [x] Write updated design doc
+- [x] Transition to implementation planning
