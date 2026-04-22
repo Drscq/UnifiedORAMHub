@@ -15,14 +15,23 @@ struct SwapBitPayload {
     size_t BitCount() const { return ciphertexts.size(); }
 };
 
+struct PackedSwapBitPayload {
+    uint64_t bit_count = 0;
+    std::vector<std::vector<uint8_t>> ciphertexts;
+};
+
 SwapBitPayload BuildDirectSwapBitPayload(const std::vector<size_t>& permutation,
                                         const TFHEContext& ctx);
+PackedSwapBitPayload BuildPackedSwapBitPayload(const std::vector<size_t>& permutation,
+                                              const TFHEContext& ctx);
 
 std::vector<RGSWCiphertext> DeserializeDirectSwapBitPayload(const SwapBitPayload& payload,
                                                             const TGswParams* params);
 
 void SendDirectSwapBitPayload(network::NetIO* net_io, const SwapBitPayload& payload);
+void SendPackedSwapBitPayload(network::NetIO* net_io, const PackedSwapBitPayload& payload);
 
 SwapBitPayload RecvDirectSwapBitPayload(network::NetIO* net_io);
+PackedSwapBitPayload RecvPackedSwapBitPayload(network::NetIO* net_io);
 
 }  // namespace oram::onion_ring

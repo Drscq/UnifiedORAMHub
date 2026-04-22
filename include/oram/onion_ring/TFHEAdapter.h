@@ -62,6 +62,41 @@ class RGSWCiphertext {
     const TGswParams* params_ = nullptr;
 };
 
+class LweKeySwitchKeyHandle {
+   public:
+    explicit LweKeySwitchKeyHandle(LweKeySwitchKey* key = nullptr);
+    ~LweKeySwitchKeyHandle();
+
+    LweKeySwitchKeyHandle(const LweKeySwitchKeyHandle&) = delete;
+    LweKeySwitchKeyHandle& operator=(const LweKeySwitchKeyHandle&) = delete;
+
+    LweKeySwitchKeyHandle(LweKeySwitchKeyHandle&& other) noexcept;
+    LweKeySwitchKeyHandle& operator=(LweKeySwitchKeyHandle&& other) noexcept;
+
+    LweKeySwitchKey* Get() { return key_; }
+    const LweKeySwitchKey* Get() const { return key_; }
+
+    std::vector<uint8_t> Serialize() const;
+    static LweKeySwitchKeyHandle Deserialize(const std::vector<uint8_t>& data);
+
+   private:
+    void Reset();
+
+    LweKeySwitchKey* key_ = nullptr;
+};
+
+struct ExpansionBundle {
+    std::vector<RGSWCiphertext> substitution_keys;
+    std::vector<LweKeySwitchKeyHandle> lwe_key_switch_keys;
+    std::vector<uint8_t> neg_sk_rgsw_bytes;
+
+    std::vector<uint8_t> Serialize() const;
+    static ExpansionBundle Deserialize(const std::vector<uint8_t>& data,
+                                       const RuntimeConfig& config,
+                                       const TLweParams* tlwe_params,
+                                       const TGswParams* tgsw_params);
+};
+
 struct TFHEContext {
     TLweParams* tlwe_params = nullptr;
     TGswParams* tgsw_params = nullptr;
@@ -84,6 +119,7 @@ struct TFHEContext {
     void Reset();
 };
 
+ExpansionBundle BuildExpansionBundle(const TFHEContext& ctx);
 RLWECiphertext EncryptBlock(const std::vector<uint8_t>& block, const TFHEContext& ctx);
 std::vector<uint8_t> DecryptBlock(const RLWECiphertext& ciphertext, const TFHEContext& ctx,
                                   size_t block_size);

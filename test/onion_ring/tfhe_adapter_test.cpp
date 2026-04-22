@@ -2,6 +2,7 @@
 
 #include <vector>
 
+#include "oram/onion_ring/PermGen.h"
 #include "oram/onion_ring/TFHEAdapter.h"
 
 namespace oram::onion_ring {
@@ -47,6 +48,18 @@ TEST(TFHEAdapterTest, TgswBitRoundTrip) {
     auto ctx = TFHEContext::CreateClientContext(RuntimeConfig{});
     auto bit = EncryptBit(true, ctx);
     EXPECT_TRUE(DecryptBit(bit, ctx));
+}
+
+TEST(TFHEAdapterTest, ExpansionBundleRoundTripsKeySwitchMaterial) {
+    RuntimeConfig cfg;
+    auto ctx = TFHEContext::CreateClientContext(cfg);
+
+    ExpansionBundle bundle = BuildExpansionBundle(ctx);
+    ExpansionBundle restored =
+        ExpansionBundle::Deserialize(bundle.Serialize(), cfg, ctx.tlwe_params, ctx.tgsw_params);
+
+    EXPECT_EQ(restored.substitution_keys.size(), bundle.substitution_keys.size());
+    EXPECT_EQ(restored.lwe_key_switch_keys.size(), bundle.lwe_key_switch_keys.size());
 }
 
 }  // namespace

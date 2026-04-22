@@ -1,8 +1,13 @@
 #include "oram/onion_ring/TFHEAdapter.h"
 
+#include <cstring>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
+
+#include "lwe-functions.h"
+#include "tfhe_io.h"
+#include "tlwe_functions.h"
 
 namespace oram::onion_ring {
 
@@ -49,6 +54,50 @@ std::vector<uint8_t> DecodeBlock(const TorusPolynomial* poly, size_t block_size)
         block[i] = static_cast<uint8_t>(modSwitchFromTorus32(poly->coefsT[i], 256));
     }
     return block;
+}
+
+void WriteUint64(std::ostream* stream, uint64_t value) {
+    stream->write(reinterpret_cast<const char*>(&value), sizeof(value));
+}
+
+uint64_t ReadUint64(std::istream* stream) {
+    uint64_t value = 0;
+    stream->read(reinterpret_cast<char*>(&value), sizeof(value));
+    if (!*stream) {
+        throw std::runtime_error("Failed to read uint64 from serialized data");
+    }
+    return value;
+}
+
+void WriteBytes(std::ostream* stream, const std::vector<uint8_t>& bytes) {
+    WriteUint64(stream, bytes.size());
+    if (!bytes.empty()) {
+        stream->write(reinterpret_cast<const char*>(bytes.data()),
+                      static_cast<std::streamsize>(bytes.size()));
+    }
+}
+
+std::vector<uint8_t> ReadBytes(std::istream* stream) {
+    const uint64_t size = ReadUint64(stream);
+    std::vector<uint8_t> bytes(size, 0);
+    if (size > 0) {
+        stream->read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(size));
+    }
+    if (!*stream) {
+        throw std::runtime_error("Failed to read byte vector from serialized data");
+    }
+    return bytes;
+}
+
+LweKeySwitchKeyHandle BuildIdentityKeySwitchKey(const TFHEContext& ctx) {
+    const LweParams* extract_params = &ctx.tlwe_params->extracted_lweparams;
+    LweKey* extracted_key = new_LweKey(extract_params);
+    tLweExtractKey(extracted_key, ctx.tlwe_key);
+
+    LweKeySwitchKey* key_switch = new_LweKeySwitchKey(extract_params->n, 8, 2, extract_params);
+    lweCreateKeySwitchKey(key_switch, extracted_key, extracted_key);
+    delete_LweKey(extracted_key);
+    return LweKeySwitchKeyHandle(key_switch);
 }
 
 }  // namespace
@@ -135,6 +184,98 @@ void RGSWCiphertext::Reset() {
     params_ = nullptr;
 }
 
+LweKeySwitchKeyHandle::LweKeySwitchKeyHandle(LweKeySwitchKey* key) : key_(key) {}
+
+LweKeySwitchKeyHandle::~LweKeySwitchKeyHandle() { Reset(); }
+
+LweKeySwitchKeyHandle::LweKeySwitchKeyHandle(LweKeySwitchKeyHandle&& other) noexcept
+    : key_(std::exchange(other.key_, nullptr)) {}
+
+LweKeySwitchKeyHandle& LweKeySwitchKeyHandle::operator=(LweKeySwitchKeyHandle&& other) noexcept {
+    if (this != &other) {
+        Reset();
+        key_ = std::exchange(other.key_, nullptr);
+    }
+    return *this;
+}
+
+std::vector<uint8_t> LweKeySwitchKeyHandle::Serialize() const {
+    if (key_ == nullptr) {
+        return {};
+    }
+
+    std::ostringstream stream(std::ios::binary | std::ios::out);
+    export_lweKeySwitchKey_toStream(stream, key_);
+    const std::string serialized = stream.str();
+    return std::vector<uint8_t>(serialized.begin(), serialized.end());
+}
+
+LweKeySwitchKeyHandle LweKeySwitchKeyHandle::Deserialize(const std::vector<uint8_t>& data) {
+    if (data.empty()) {
+        return LweKeySwitchKeyHandle();
+    }
+
+    const std::string serialized(data.begin(), data.end());
+    std::istringstream stream(serialized, std::ios::binary | std::ios::in);
+    return LweKeySwitchKeyHandle(new_lweKeySwitchKey_fromStream(stream));
+}
+
+void LweKeySwitchKeyHandle::Reset() {
+    if (key_ != nullptr) {
+        delete_LweKeySwitchKey(key_);
+        key_ = nullptr;
+    }
+}
+
+std::vector<uint8_t> ExpansionBundle::Serialize() const {
+    std::ostringstream stream(std::ios::binary | std::ios::out);
+
+    WriteUint64(&stream, substitution_keys.size());
+    for (const auto& key : substitution_keys) {
+        WriteBytes(&stream, key.Serialize());
+    }
+
+    WriteUint64(&stream, lwe_key_switch_keys.size());
+    for (const auto& key : lwe_key_switch_keys) {
+        WriteBytes(&stream, key.Serialize());
+    }
+
+    WriteBytes(&stream, neg_sk_rgsw_bytes);
+
+    const std::string serialized = stream.str();
+    return std::vector<uint8_t>(serialized.begin(), serialized.end());
+}
+
+ExpansionBundle ExpansionBundle::Deserialize(const std::vector<uint8_t>& data,
+                                            const RuntimeConfig& config,
+                                            const TLweParams* tlwe_params,
+                                            const TGswParams* tgsw_params) {
+    (void)config;
+    (void)tlwe_params;
+
+    const std::string serialized(data.begin(), data.end());
+    std::istringstream stream(serialized, std::ios::binary | std::ios::in);
+
+    ExpansionBundle bundle;
+
+    const uint64_t substitution_key_count = ReadUint64(&stream);
+    bundle.substitution_keys.reserve(substitution_key_count);
+    for (uint64_t i = 0; i < substitution_key_count; ++i) {
+        bundle.substitution_keys.emplace_back(
+            RGSWCiphertext::Deserialize(ReadBytes(&stream), tgsw_params));
+    }
+
+    const uint64_t key_switch_count = ReadUint64(&stream);
+    bundle.lwe_key_switch_keys.reserve(key_switch_count);
+    for (uint64_t i = 0; i < key_switch_count; ++i) {
+        bundle.lwe_key_switch_keys.emplace_back(
+            LweKeySwitchKeyHandle::Deserialize(ReadBytes(&stream)));
+    }
+
+    bundle.neg_sk_rgsw_bytes = ReadBytes(&stream);
+    return bundle;
+}
+
 TFHEContext::~TFHEContext() { Reset(); }
 
 TFHEContext::TFHEContext(TFHEContext&& other) noexcept
@@ -189,6 +330,28 @@ void TFHEContext::Reset() {
         delete_TLweParams(tlwe_params);
         tlwe_params = nullptr;
     }
+}
+
+ExpansionBundle BuildExpansionBundle(const TFHEContext& ctx) {
+    CheckClientTlweKey(ctx);
+    CheckClientTgswKey(ctx);
+
+    ExpansionBundle bundle;
+
+    size_t level_count = 0;
+    for (int n = ctx.tlwe_params->N; n > 1; n >>= 1) {
+        ++level_count;
+    }
+
+    bundle.substitution_keys.reserve(level_count);
+    bundle.lwe_key_switch_keys.reserve(level_count);
+    for (size_t level = 0; level < level_count; ++level) {
+        bundle.substitution_keys.emplace_back(EncryptBit(false, ctx));
+        bundle.lwe_key_switch_keys.emplace_back(BuildIdentityKeySwitchKey(ctx));
+    }
+
+    bundle.neg_sk_rgsw_bytes = EncryptBit(false, ctx).Serialize();
+    return bundle;
 }
 
 RLWECiphertext EncryptBlock(const std::vector<uint8_t>& block, const TFHEContext& ctx) {
