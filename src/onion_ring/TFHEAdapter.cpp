@@ -100,6 +100,24 @@ LweKeySwitchKeyHandle BuildIdentityKeySwitchKey(const TFHEContext& ctx) {
     return LweKeySwitchKeyHandle(key_switch);
 }
 
+RGSWCiphertext BuildNegatedSecretKeyCiphertext(const TFHEContext& ctx) {
+    CheckClientTlweKey(ctx);
+    CheckClientTgswKey(ctx);
+    if (ctx.tlwe_params->k != 1) {
+        throw std::invalid_argument("Negated-secret-key support currently expects TLWE k == 1");
+    }
+
+    IntPolynomial* neg_secret = new_IntPolynomial(ctx.tlwe_params->N);
+    for (int coeff = 0; coeff < ctx.tlwe_params->N; ++coeff) {
+        neg_secret->coefs[coeff] = -ctx.tlwe_key->key[0].coefs[coeff];
+    }
+
+    RGSWCiphertext ciphertext(ctx.tgsw_params);
+    tGswSymEncrypt(ciphertext.Get(), neg_secret, 0.0, ctx.tgsw_key);
+    delete_IntPolynomial(neg_secret);
+    return ciphertext;
+}
+
 }  // namespace
 
 RLWECiphertext::RLWECiphertext(const TLweParams* params) : sample_(new_TLweSample(params)), params_(params) {}
@@ -350,8 +368,12 @@ ExpansionBundle BuildExpansionBundle(const TFHEContext& ctx) {
         bundle.lwe_key_switch_keys.emplace_back(BuildIdentityKeySwitchKey(ctx));
     }
 
-    bundle.neg_sk_rgsw_bytes = EncryptBit(false, ctx).Serialize();
+    bundle.neg_sk_rgsw_bytes = BuildNegatedSecretKeyCiphertext(ctx).Serialize();
     return bundle;
+}
+
+RGSWCiphertext EncryptNegatedSecretKey(const TFHEContext& ctx) {
+    return BuildNegatedSecretKeyCiphertext(ctx);
 }
 
 RLWECiphertext EncryptBlock(const std::vector<uint8_t>& block, const TFHEContext& ctx) {

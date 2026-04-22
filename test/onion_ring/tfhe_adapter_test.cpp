@@ -60,6 +60,7 @@ TEST(TFHEAdapterTest, ExpansionBundleRoundTripsKeySwitchMaterial) {
 
     EXPECT_EQ(restored.substitution_keys.size(), bundle.substitution_keys.size());
     EXPECT_EQ(restored.lwe_key_switch_keys.size(), bundle.lwe_key_switch_keys.size());
+    EXPECT_FALSE(restored.neg_sk_rgsw_bytes.empty());
 }
 
 }  // namespace

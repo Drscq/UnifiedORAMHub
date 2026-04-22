@@ -25,10 +25,12 @@ class OnionRingServer {
     size_t num_nodes_;
     std::vector<OnionBucket> tree_;
     TFHEContext ctx_;
+    ExpansionBundle expansion_bundle_;
     std::unique_ptr<network::NetIO> net_io_;
     bool running_ = false;
 
     std::vector<size_t> GetPathIndices(uint64_t leaf) const;
+    void HandleExpansionSupport();
     void HandleAccess();
     void HandleClearPath();
     void HandleReadBucket();

@@ -2,10 +2,23 @@
 
 #include <stdexcept>
 
-#include "tlwe_functions.h"
 #include "oram/onion_ring/WaksmanNetwork.h"
 
 namespace oram::onion_ring {
+
+namespace {
+
+void AppendUint64(std::vector<uint8_t>* bytes, uint64_t value) {
+    const uint8_t* value_bytes = reinterpret_cast<const uint8_t*>(&value);
+    bytes->insert(bytes->end(), value_bytes, value_bytes + sizeof(value));
+}
+
+void AppendBlob(std::vector<uint8_t>* bytes, const std::vector<uint8_t>& blob) {
+    AppendUint64(bytes, blob.size());
+    bytes->insert(bytes->end(), blob.begin(), blob.end());
+}
+
+}  // namespace
 
 SwapBitPayload BuildDirectSwapBitPayload(const std::vector<size_t>& permutation,
                                         const TFHEContext& ctx) {
@@ -22,30 +35,26 @@ SwapBitPayload BuildDirectSwapBitPayload(const std::vector<size_t>& permutation,
 
 PackedSwapBitPayload BuildPackedSwapBitPayload(const std::vector<size_t>& permutation,
                                               const TFHEContext& ctx) {
-    if (ctx.tlwe_key == nullptr) {
-        throw std::runtime_error("Packed swap-bit payload generation requires a client TLWE key");
-    }
-
     WaksmanNetwork network(permutation.size());
     const std::vector<bool> swap_bits = network.GenerateSwapBits(permutation);
 
     PackedSwapBitPayload payload;
     payload.bit_count = swap_bits.size();
 
-    const size_t coeffs_per_ciphertext = static_cast<size_t>(ctx.tlwe_params->N);
-    for (size_t offset = 0; offset < swap_bits.size(); offset += coeffs_per_ciphertext) {
-        RLWECiphertext packed(ctx.tlwe_params);
-        TorusPolynomial* poly = new_TorusPolynomial(ctx.tlwe_params->N);
-        torusPolynomialClear(poly);
-
-        const size_t chunk_size = std::min(coeffs_per_ciphertext, swap_bits.size() - offset);
-        for (size_t i = 0; i < chunk_size; ++i) {
-            poly->coefsT[i] = modSwitchToTorus32(swap_bits[offset + i] ? 1 : 0, 2);
+    constexpr size_t kBatchSize = 128;
+    std::vector<uint8_t> batch;
+    size_t count_in_batch = 0;
+    for (bool bit : swap_bits) {
+        AppendBlob(&batch, EncryptBit(bit, ctx).Serialize());
+        ++count_in_batch;
+        if (count_in_batch == kBatchSize) {
+            payload.ciphertexts.push_back(std::move(batch));
+            batch.clear();
+            count_in_batch = 0;
         }
-
-        tLweSymEncrypt(packed.Get(), poly, ctx.alpha, ctx.tlwe_key);
-        delete_TorusPolynomial(poly);
-        payload.ciphertexts.push_back(packed.Serialize());
+    }
+    if (!batch.empty()) {
+        payload.ciphertexts.push_back(std::move(batch));
     }
 
     return payload;

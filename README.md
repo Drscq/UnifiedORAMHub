@@ -15,10 +15,17 @@ The Onion Ring implementation on this branch includes:
 - CMux, external product, and substitution helpers
 - a tested Waksman permutation layer
 - live client/server triplet eviction and leaf refresh over `NetIO`
-- direct encrypted TGSW swap-bit transport for server-side homomorphic permutation
+- a practical packed swap-control transport for eviction and refresh:
+  - the client batches encrypted swap controls into fewer transport frames,
+  - the server reconstructs the per-gate `RGSWCiphertext` controls used by `EvalWaksman()`,
+  - the live protocol no longer sends one swap-control frame per gate
+- expansion-bundle scaffolding for the heavier follow-up work:
+  - serialized `RGSW(-s)` support material,
+  - serialized LWE key-switch material,
+  - a `HomExpand` entry point used by the packed live path
 
-The remaining optimization follow-up is the paper-faithful packed RLWE swap-bit path with
-`HomExpand`. That follow-up is tracked in
+The remaining optimization follow-up is the paper-faithful recursive RLWE coefficient-expansion
+path from the Onion Ring paper. That follow-up is tracked in
 [docs/plans/2026-04-21-onion-ring-homexpand-followup.md](docs/plans/2026-04-21-onion-ring-homexpand-followup.md).
 
 ## Repository Layout
@@ -63,7 +70,7 @@ Run only the Onion Ring suite:
 
 ```bash
 cd worktrees/onion-ring-oram
-ctest --test-dir build --output-on-failure -R 'WaksmanTest|PermGenTest|OnionRingE2ETest|OnionRingScheduleTest|TFHEAdapterTest|HomOpsTest'
+ctest --test-dir build --output-on-failure -R 'WaksmanTest|PermGenTest|HomExpandTest|OnionRingE2ETest|OnionRingScheduleTest|TFHEAdapterTest|HomOpsTest'
 ```
 
 Run the long-horizon Onion Ring regression by itself:
@@ -88,6 +95,7 @@ this branch is:
    - [OnionRingClient.cpp](src/onion_ring/OnionRingClient.cpp)
    - [OnionRingServer.cpp](src/onion_ring/OnionRingServer.cpp)
    - [PermGen.cpp](src/onion_ring/PermGen.cpp)
+   - [HomExpand.cpp](src/onion_ring/HomExpand.cpp)
 
 If you want a dedicated CLI driver for starting an Onion Ring server and client outside the test
 harness, that would be a small follow-up on top of the current library code.

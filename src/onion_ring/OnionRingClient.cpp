@@ -17,7 +17,7 @@ struct ChildRoutingPlan {
     std::vector<uint64_t> child_slots;
     std::vector<int64_t> input_ids;
     std::vector<size_t> permutation;
-    SwapBitPayload swap_bits;
+    PackedSwapBitPayload swap_bits;
 };
 
 std::vector<size_t> MakeRandomPermutation(size_t size, std::mt19937_64* prng) {
@@ -62,9 +62,21 @@ OnionRingClient::OnionRingClient(const std::string& server_address, int port,
       id_map_(num_nodes_, std::vector<int64_t>(config_.BucketSlots(), -1)),
       ctx_(TFHEContext::CreateClientContext(config_)),
       net_io_(std::make_unique<network::NetIO>(server_address, port, false, false)),
+      neg_secret_key_bytes_(EncryptNegatedSecretKey(ctx_).Serialize()),
       prng_(0x4F6E696F6EULL) {
     std::vector<uint8_t> shared_key(crypto::AES_CTR::kKeySize128, 0x42);
     cipher_ = std::make_unique<crypto::AES_CTR>(shared_key);
+
+    char setup = 'E';
+    net_io_->SendData(&setup, sizeof(setup));
+    net_io_->SendVec(neg_secret_key_bytes_);
+    net_io_->Flush();
+
+    char ack = 0;
+    net_io_->RecvData(&ack, sizeof(ack));
+    if (ack != 'K') {
+        throw std::runtime_error("Unexpected Onion Ring packed-support acknowledgment");
+    }
 
     for (size_t i = 0; i < pos_map_.size(); ++i) {
         pos_map_[i] = GetRandomLeaf();
@@ -213,7 +225,7 @@ void OnionRingClient::TripletEvict(size_t source_idx, size_t left_idx, size_t ri
             plan.input_ids.push_back(-1);
         }
         plan.permutation = MakeRandomPermutation(bucket_slots, &prng_);
-        plan.swap_bits = BuildDirectSwapBitPayload(plan.permutation, ctx_);
+        plan.swap_bits = BuildPackedSwapBitPayload(plan.permutation, ctx_);
         return plan;
     };
 
@@ -232,7 +244,7 @@ void OnionRingClient::TripletEvict(size_t source_idx, size_t left_idx, size_t ri
     auto send_child_plan = [&](const ChildRoutingPlan& plan) {
         net_io_->SendVec(SerializeUint64Vector(plan.source_slots));
         net_io_->SendVec(SerializeUint64Vector(plan.child_slots));
-        SendDirectSwapBitPayload(net_io_.get(), plan.swap_bits);
+        SendPackedSwapBitPayload(net_io_.get(), plan.swap_bits);
     };
 
     send_child_plan(left_plan);
@@ -276,14 +288,14 @@ void OnionRingClient::LeafRefresh(size_t leaf_bucket_idx) {
     }
 
     const auto permutation = MakeRandomPermutation(config_.BucketSlots(), &prng_);
-    const SwapBitPayload swap_bits = BuildDirectSwapBitPayload(permutation, ctx_);
+    const PackedSwapBitPayload swap_bits = BuildPackedSwapBitPayload(permutation, ctx_);
 
     char refresh_command = 'F';
     net_io_->SendData(&refresh_command, sizeof(refresh_command));
     for (const auto& ciphertext : refreshed_input) {
         net_io_->SendVec(ciphertext.Serialize());
     }
-    SendDirectSwapBitPayload(net_io_.get(), swap_bits);
+    SendPackedSwapBitPayload(net_io_.get(), swap_bits);
     net_io_->Flush();
 
     char ack = 0;

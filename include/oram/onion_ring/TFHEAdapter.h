@@ -120,6 +120,7 @@ struct TFHEContext {
 };
 
 ExpansionBundle BuildExpansionBundle(const TFHEContext& ctx);
+RGSWCiphertext EncryptNegatedSecretKey(const TFHEContext& ctx);
 RLWECiphertext EncryptBlock(const std::vector<uint8_t>& block, const TFHEContext& ctx);
 std::vector<uint8_t> DecryptBlock(const RLWECiphertext& ciphertext, const TFHEContext& ctx,
                                   size_t block_size);

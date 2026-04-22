@@ -4,6 +4,7 @@
 #include <stdexcept>
 
 #include "tlwe_functions.h"
+#include "oram/onion_ring/HomExpand.h"
 #include "oram/onion_ring/PermGen.h"
 #include "oram/onion_ring/WaksmanNetwork.h"
 
@@ -122,6 +123,17 @@ void OnionRingServer::HandleAccess() {
     net_io_->Flush();
 }
 
+void OnionRingServer::HandleExpansionSupport() {
+    net_io_->RecvVec(expansion_bundle_.neg_sk_rgsw_bytes);
+    if (expansion_bundle_.neg_sk_rgsw_bytes.empty()) {
+        throw std::runtime_error("Packed-support setup did not provide RGSW(-s) bytes");
+    }
+
+    char ack = 'K';
+    net_io_->SendData(&ack, sizeof(ack));
+    net_io_->Flush();
+}
+
 void OnionRingServer::HandleClearPath() {
     uint64_t leaf = 0;
     net_io_->RecvData(&leaf, sizeof(leaf));
@@ -193,8 +205,8 @@ void OnionRingServer::HandleEvictTriplet() {
         const auto source_slots = DeserializeUint64Vector(source_bytes);
         const auto child_slots = DeserializeUint64Vector(child_bytes);
 
-        auto swap_bits =
-            DeserializeDirectSwapBitPayload(RecvDirectSwapBitPayload(net_io_.get()), ctx_.tgsw_params);
+        auto swap_bits = HomExpandPackedSwapBits(RecvPackedSwapBitPayload(net_io_.get()),
+                                                 expansion_bundle_, ctx_);
 
         std::vector<RLWECiphertext> assembled =
             AssembleChildSlots(tree_[source_idx], source_slots, tree_[child_idx], child_slots,
@@ -256,7 +268,7 @@ void OnionRingServer::HandleLeafRefresh() {
     }
 
     auto swap_bits =
-        DeserializeDirectSwapBitPayload(RecvDirectSwapBitPayload(net_io_.get()), ctx_.tgsw_params);
+        HomExpandPackedSwapBits(RecvPackedSwapBitPayload(net_io_.get()), expansion_bundle_, ctx_);
 
     std::vector<TLweSample*> slot_ptrs;
     slot_ptrs.reserve(refreshed.size());
@@ -288,7 +300,9 @@ void OnionRingServer::HandleRequests() {
             if (command == 'Q') {
                 break;
             }
-            if (command == 'A') {
+            if (command == 'E') {
+                HandleExpansionSupport();
+            } else if (command == 'A') {
                 HandleAccess();
             } else if (command == 'C') {
                 HandleClearPath();

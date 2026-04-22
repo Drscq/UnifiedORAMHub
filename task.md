@@ -21,8 +21,8 @@
 - [x] Task 19: Add failing packed-transport and HomExpand tests
 - [x] Task 20: Add expansion-bundle and packed-payload scaffolding
 - [x] Task 21: Add HomExpand public API and failing oracle-comparison tests
-- [ ] Task 22: Implement recursive RLWE expansion
-- [ ] Task 23: Implement RLWE-to-RGSW lift
-- [ ] Task 24: Route Onion Ring protocol handlers through packed transport
-- [ ] Task 25: Remove direct transport from the live path and tighten regression coverage
-- [ ] Task 26: Run full verification and prepare branch completion
+- [x] Task 22: Implement the practical packed swap-control batching path
+- [x] Task 23: Route Onion Ring protocol handlers through the packed live transport
+- [x] Task 24: Tighten packed-path regression coverage and stress verification
+- [x] Task 25: Update README usage and manual validation notes for the packed path
+- [ ] Task 26: Return to the paper-faithful recursive RLWE coefficient-expansion follow-up
