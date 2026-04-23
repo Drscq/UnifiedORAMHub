@@ -65,6 +65,10 @@ void ReplaceBucket(OnionBucket* bucket, std::vector<RLWECiphertext>* contents,
     }
 }
 
+const TGswParams* ProtocolControlParams(const RuntimeConfig& config, const TFHEContext& ctx) {
+    return config.use_recursive_packed_swap_bits ? ctx.swap_tgsw_params : ctx.practical_tgsw_params;
+}
+
 }  // namespace
 
 OnionRingServer::OnionRingServer(const std::string& address, int port, const RuntimeConfig& config)
@@ -124,9 +128,15 @@ void OnionRingServer::HandleAccess() {
 }
 
 void OnionRingServer::HandleExpansionSupport() {
-    net_io_->RecvVec(expansion_bundle_.neg_sk_rgsw_bytes);
+    std::vector<uint8_t> bundle_bytes;
+    net_io_->RecvVec(bundle_bytes);
+    expansion_bundle_ =
+        ExpansionBundle::Deserialize(bundle_bytes, config_, ctx_.tlwe_params, ctx_.swap_tgsw_params);
     if (expansion_bundle_.neg_sk_rgsw_bytes.empty()) {
         throw std::runtime_error("Packed-support setup did not provide RGSW(-s) bytes");
+    }
+    if (expansion_bundle_.recursive_ks_keys.empty()) {
+        throw std::runtime_error("Packed-support setup did not provide recursive RLWE key-switch material");
     }
 
     char ack = 'K';
@@ -223,7 +233,7 @@ void OnionRingServer::HandleEvictTriplet() {
             swap_ptrs.push_back(bit.Get());
         }
 
-        WaksmanNetwork::EvalWaksman(slot_ptrs, swap_ptrs, ctx_.tgsw_params);
+        WaksmanNetwork::EvalWaksman(slot_ptrs, swap_ptrs, ProtocolControlParams(config_, ctx_));
         ReplaceBucket(&tree_[child_idx], &assembled, ctx_.tlwe_params);
     };
 
@@ -282,7 +292,7 @@ void OnionRingServer::HandleLeafRefresh() {
         swap_ptrs.push_back(bit.Get());
     }
 
-    WaksmanNetwork::EvalWaksman(slot_ptrs, swap_ptrs, ctx_.tgsw_params);
+    WaksmanNetwork::EvalWaksman(slot_ptrs, swap_ptrs, ProtocolControlParams(config_, ctx_));
     ReplaceBucket(&tree_[bucket_idx], &refreshed, ctx_.tlwe_params);
 
     char ack = 'K';

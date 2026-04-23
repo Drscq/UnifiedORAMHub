@@ -55,7 +55,7 @@ TEST(HomOpsTest, CMuxSelectsD1WhenControlIsOne) {
               std::vector<uint8_t>(cfg.block_size, 0x20));
 }
 
-TEST(HomOpsTest, SubsMatchesPolynomialRotationForSmallAi) {
+TEST(HomOpsTest, SubsMatchesPolynomialAutomorphismForOddAi) {
     RuntimeConfig cfg;
     cfg.block_size = 8;
     auto ctx = TFHEContext::CreateClientContext(cfg);
@@ -75,13 +75,36 @@ TEST(HomOpsTest, SubsMatchesPolynomialRotationForSmallAi) {
 
     TorusPolynomial* expected = new_TorusPolynomial(ctx.tlwe_params->N);
     TorusPolynomial* actual = new_TorusPolynomial(ctx.tlwe_params->N);
-    torusPolynomialMulByXai(expected, ai, plain);
-    tLweSymDecrypt(actual, rotated.Get(), ctx.tlwe_key, 256);
+    torusPolynomialClear(expected);
+    for (int coeff = 0; coeff < ctx.tlwe_params->N; ++coeff) {
+        const int mapped = (coeff * ai) % (2 * ctx.tlwe_params->N);
+        if (mapped < ctx.tlwe_params->N) {
+            expected->coefsT[mapped] = plain->coefsT[coeff];
+        } else {
+            expected->coefsT[mapped - ctx.tlwe_params->N] = -plain->coefsT[coeff];
+        }
+    }
+
+    TLweKey* transformed_key = new_TLweKey(ctx.tlwe_params);
+    for (int coeff = 0; coeff < ctx.tlwe_params->N; ++coeff) {
+        transformed_key->key[0].coefs[coeff] = 0;
+    }
+    for (int coeff = 0; coeff < ctx.tlwe_params->N; ++coeff) {
+        const int mapped = (coeff * ai) % (2 * ctx.tlwe_params->N);
+        if (mapped < ctx.tlwe_params->N) {
+            transformed_key->key[0].coefs[mapped] = ctx.tlwe_key->key[0].coefs[coeff];
+        } else {
+            transformed_key->key[0].coefs[mapped - ctx.tlwe_params->N] =
+                -ctx.tlwe_key->key[0].coefs[coeff];
+        }
+    }
+    tLweSymDecrypt(actual, rotated.Get(), transformed_key, 256);
 
     for (int i = 0; i < ctx.tlwe_params->N; ++i) {
         EXPECT_EQ(actual->coefsT[i], expected->coefsT[i]) << "Mismatch at coefficient " << i;
     }
 
+    delete_TLweKey(transformed_key);
     delete_TorusPolynomial(actual);
     delete_TorusPolynomial(expected);
     delete_TorusPolynomial(plain);

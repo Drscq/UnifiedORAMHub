@@ -9,6 +9,11 @@
 
 namespace oram::onion_ring {
 
+enum class PackedSwapBitMode : uint64_t {
+    kPracticalBatchedRgsw = 0,
+    kRecursiveRlwe = 1,
+};
+
 struct SwapBitPayload {
     std::vector<std::vector<uint8_t>> ciphertexts;
 
@@ -16,7 +21,10 @@ struct SwapBitPayload {
 };
 
 struct PackedSwapBitPayload {
+    PackedSwapBitMode mode = PackedSwapBitMode::kPracticalBatchedRgsw;
     uint64_t bit_count = 0;
+    uint64_t bits_per_ciphertext = 0;
+    uint64_t row_count = 1;
     std::vector<std::vector<uint8_t>> ciphertexts;
 };
 
@@ -24,6 +32,8 @@ SwapBitPayload BuildDirectSwapBitPayload(const std::vector<size_t>& permutation,
                                         const TFHEContext& ctx);
 PackedSwapBitPayload BuildPackedSwapBitPayload(const std::vector<size_t>& permutation,
                                               const TFHEContext& ctx);
+PackedSwapBitPayload BuildRecursivePackedSwapBitPayload(const std::vector<size_t>& permutation,
+                                                       const TFHEContext& ctx);
 
 std::vector<RGSWCiphertext> DeserializeDirectSwapBitPayload(const SwapBitPayload& payload,
                                                             const TGswParams* params);

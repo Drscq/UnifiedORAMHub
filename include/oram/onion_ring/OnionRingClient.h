@@ -35,7 +35,7 @@ class OnionRingClient : public core::RAM {
     TFHEContext ctx_;
     std::unique_ptr<network::NetIO> net_io_;
     std::unique_ptr<crypto::AES_CTR> cipher_;
-    std::vector<uint8_t> neg_secret_key_bytes_;
+    std::vector<uint8_t> expansion_bundle_bytes_;
     size_t access_count_ = 0;
     size_t eviction_counter_ = 0;
     std::mt19937_64 prng_;

@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cstdint>
 
+#include "oram/onion_ring/TFHEAdapter.h"
+
 #include "numeric_functions.h"
 #include "tgsw.h"
 #include "tlwe.h"
@@ -24,16 +26,14 @@ TEST(TFHE64BackendTest, ModSwitchRoundTripsLargeMessageSpaces) {
 }
 
 TEST(TFHE64BackendTest, PaperSwapGadgetRowsRemainNonZeroAfterPackingScale) {
-    TLweParams* tlwe_params = new_TLweParams(2048, 1, 1e-12, 1.0 / 16.0);
-    TGswParams* swap_params = new_TGswParams(8, 3, tlwe_params);
+    RuntimeConfig cfg;
+    cfg.use_recursive_packed_swap_bits = true;
+    auto ctx = TFHEContext::CreateClientContext(cfg);
 
-    for (int row = 0; row < swap_params->l; ++row) {
-        EXPECT_GT(swap_params->h[row] / tlwe_params->N, 0)
-            << "row=" << row << " h=" << swap_params->h[row];
+    for (int row = 0; row < ctx.swap_tgsw_params->l; ++row) {
+        EXPECT_GT(ctx.swap_tgsw_params->h[row] / ctx.tlwe_params->N, 0)
+            << "row=" << row << " h=" << ctx.swap_tgsw_params->h[row];
     }
-
-    delete_TGswParams(swap_params);
-    delete_TLweParams(tlwe_params);
 }
 
 }  // namespace

@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "oram/network/NetIO.h"
+#include "oram/onion_ring/HomExpand.h"
 #include "oram/onion_ring/OnionBucket.h"
 #include "oram/onion_ring/PermGen.h"
 #include "oram/onion_ring/TFHEAdapter.h"
@@ -61,6 +62,16 @@ int NextPort() {
     return g_port_counter.fetch_add(1, std::memory_order_relaxed);
 }
 
+RuntimeConfig StableWaksmanConfig() {
+    RuntimeConfig cfg;
+    cfg.tgsw_bgbit = 10;
+    cfg.rlwe_ks_basebit = 5;
+    cfg.rlwe_ks_length = 6;
+    return cfg;
+}
+
+RuntimeConfig RecursiveFriendlyConfig() { return RuntimeConfig{}; }
+
 TEST(WaksmanTest, GenerateSwapBitsPermutesFourElements) {
     WaksmanNetwork network(4);
     std::vector<size_t> permutation = {2, 0, 3, 1};
@@ -84,7 +95,7 @@ TEST(WaksmanTest, GenerateSwapBitsPermutesEightElements) {
 }
 
 TEST(WaksmanTest, EvalWaksmanMatchesPermutationForEncryptedBlocks) {
-    RuntimeConfig cfg;
+    RuntimeConfig cfg = StableWaksmanConfig();
     cfg.block_size = 16;
     auto ctx = TFHEContext::CreateClientContext(cfg);
 
@@ -184,8 +195,23 @@ TEST(PermGenTest, PackedSwapBitPayloadCompressesGateBitsIntoRlweCiphertexts) {
     EXPECT_EQ(payload.bit_count, gate_count);
 }
 
-TEST(WaksmanTest, RepeatedEvalWaksmanPreservesEncryptedBlocksAcrossRounds) {
+TEST(PermGenTest, RecursivePackedPayloadUsesFewerCiphertextsThanGateCount) {
     RuntimeConfig cfg;
+    cfg.block_size = 16;
+    auto ctx = TFHEContext::CreateClientContext(cfg);
+
+    std::vector<size_t> permutation = {5, 2, 7, 1, 6, 0, 4, 3};
+    const size_t gate_count = WaksmanNetwork(permutation.size()).NumGates();
+
+    PackedSwapBitPayload payload = BuildRecursivePackedSwapBitPayload(permutation, ctx);
+
+    EXPECT_EQ(payload.mode, PackedSwapBitMode::kRecursiveRlwe);
+    EXPECT_LT(payload.ciphertexts.size(), gate_count);
+    EXPECT_EQ(payload.bit_count, gate_count);
+}
+
+TEST(WaksmanTest, RepeatedEvalWaksmanPreservesEncryptedBlocksAcrossRounds) {
+    RuntimeConfig cfg = StableWaksmanConfig();
     cfg.block_size = 16;
     auto ctx = TFHEContext::CreateClientContext(cfg);
 
@@ -235,8 +261,109 @@ TEST(WaksmanTest, RepeatedEvalWaksmanPreservesEncryptedBlocksAcrossRounds) {
     }
 }
 
+TEST(WaksmanTest, RepeatedEvalWaksmanPreservesEncryptedBlocksAcrossRoundsWithRecursiveFriendlyConfig) {
+    RuntimeConfig cfg = RecursiveFriendlyConfig();
+    cfg.block_size = 16;
+    auto ctx = TFHEContext::CreateClientContext(cfg);
+
+    WaksmanNetwork network(8);
+    std::vector<RLWECiphertext> encrypted_blocks;
+    std::vector<uint8_t> expected_values;
+    for (uint8_t value = 1; value <= 8; ++value) {
+        encrypted_blocks.emplace_back(EncryptBlock(BlockByte(value, cfg.block_size), ctx));
+        expected_values.push_back(value);
+    }
+
+    for (size_t round = 0; round < 4; ++round) {
+        std::vector<size_t> permutation = {7, 0, 6, 1, 5, 2, 4, 3};
+        auto swap_bits_plain = network.GenerateSwapBits(permutation);
+
+        std::vector<RGSWCiphertext> encrypted_swap_bits;
+        encrypted_swap_bits.reserve(swap_bits_plain.size());
+        for (bool bit : swap_bits_plain) {
+            encrypted_swap_bits.emplace_back(EncryptBit(bit, ctx));
+        }
+
+        std::vector<TLweSample*> block_ptrs;
+        block_ptrs.reserve(encrypted_blocks.size());
+        for (auto& block : encrypted_blocks) {
+            block_ptrs.push_back(block.Get());
+        }
+
+        std::vector<TGswSample*> swap_ptrs;
+        swap_ptrs.reserve(encrypted_swap_bits.size());
+        for (auto& bit : encrypted_swap_bits) {
+            swap_ptrs.push_back(bit.Get());
+        }
+
+        WaksmanNetwork::EvalWaksman(block_ptrs, swap_ptrs, ctx.tgsw_params);
+
+        std::vector<uint8_t> next_expected(expected_values.size(), 0);
+        for (size_t dest = 0; dest < permutation.size(); ++dest) {
+            next_expected[dest] = expected_values[permutation[dest]];
+        }
+        expected_values = std::move(next_expected);
+
+        for (size_t i = 0; i < expected_values.size(); ++i) {
+            SCOPED_TRACE(round);
+            EXPECT_EQ(DecryptBlock(encrypted_blocks[i], ctx, cfg.block_size),
+                      BlockByte(expected_values[i], cfg.block_size));
+        }
+    }
+}
+
+TEST(WaksmanTest, RecursivePackedSwapBitsDriveRepeatedEvalAcrossContexts) {
+    RuntimeConfig cfg = RecursiveFriendlyConfig();
+    cfg.block_size = 16;
+    auto client_ctx = TFHEContext::CreateClientContext(cfg);
+    auto server_ctx = TFHEContext::CreateServerContext(cfg);
+    ExpansionBundle bundle = BuildRecursiveExpansionBundle(client_ctx);
+
+    WaksmanNetwork network(8);
+    std::vector<RLWECiphertext> server_blocks;
+    std::vector<uint8_t> expected_values;
+    for (uint8_t value = 1; value <= 8; ++value) {
+        RLWECiphertext client_block = EncryptBlock(BlockByte(value, cfg.block_size), client_ctx);
+        server_blocks.emplace_back(
+            RLWECiphertext::Deserialize(client_block.Serialize(), server_ctx.tlwe_params));
+        expected_values.push_back(value);
+    }
+
+    for (size_t round = 0; round < 3; ++round) {
+        std::vector<size_t> permutation = {7, 0, 6, 1, 5, 2, 4, 3};
+        PackedSwapBitPayload payload = BuildRecursivePackedSwapBitPayload(permutation, client_ctx);
+        std::vector<RGSWCiphertext> expanded = HomExpandPackedSwapBits(payload, bundle, server_ctx);
+
+        std::vector<TLweSample*> block_ptrs;
+        block_ptrs.reserve(server_blocks.size());
+        for (auto& block : server_blocks) {
+            block_ptrs.push_back(block.Get());
+        }
+
+        std::vector<TGswSample*> swap_ptrs;
+        swap_ptrs.reserve(expanded.size());
+        for (auto& bit : expanded) {
+            swap_ptrs.push_back(bit.Get());
+        }
+
+        WaksmanNetwork::EvalWaksman(block_ptrs, swap_ptrs, server_ctx.tgsw_params);
+
+        std::vector<uint8_t> next_expected(expected_values.size(), 0);
+        for (size_t dest = 0; dest < permutation.size(); ++dest) {
+            next_expected[dest] = expected_values[permutation[dest]];
+        }
+        expected_values = std::move(next_expected);
+
+        for (size_t i = 0; i < expected_values.size(); ++i) {
+            SCOPED_TRACE(round);
+            EXPECT_EQ(DecryptBlock(server_blocks[i], client_ctx, cfg.block_size),
+                      BlockByte(expected_values[i], cfg.block_size));
+        }
+    }
+}
+
 TEST(WaksmanTest, RepeatedEvalWaksmanPreservesSparseBucketsAcrossRounds) {
-    RuntimeConfig cfg;
+    RuntimeConfig cfg = StableWaksmanConfig();
     cfg.block_size = 32;
     auto ctx = TFHEContext::CreateClientContext(cfg);
 
@@ -290,7 +417,7 @@ TEST(WaksmanTest, RepeatedEvalWaksmanPreservesSparseBucketsAcrossRounds) {
 }
 
 TEST(WaksmanTest, EvalWaksmanMatchesPermutationAfterSwapBitSerialization) {
-    RuntimeConfig cfg;
+    RuntimeConfig cfg = StableWaksmanConfig();
     cfg.block_size = 32;
     auto ctx = TFHEContext::CreateClientContext(cfg);
 
@@ -339,7 +466,7 @@ TEST(WaksmanTest, EvalWaksmanMatchesPermutationAfterSwapBitSerialization) {
 }
 
 TEST(WaksmanTest, RepeatedEvalWaksmanPreservesBucketsWithTrivialZeroPadding) {
-    RuntimeConfig cfg;
+    RuntimeConfig cfg = StableWaksmanConfig();
     cfg.block_size = 32;
     auto ctx = TFHEContext::CreateClientContext(cfg);
 
@@ -394,7 +521,7 @@ TEST(WaksmanTest, RepeatedEvalWaksmanPreservesBucketsWithTrivialZeroPadding) {
 }
 
 TEST(WaksmanTest, EvalWaksmanPreservesPatternBlocksWithTrivialZeroPadding) {
-    RuntimeConfig cfg;
+    RuntimeConfig cfg = StableWaksmanConfig();
     cfg.block_size = 32;
     auto ctx = TFHEContext::CreateClientContext(cfg);
 
@@ -447,7 +574,7 @@ TEST(WaksmanTest, EvalWaksmanPreservesPatternBlocksWithTrivialZeroPadding) {
 }
 
 TEST(WaksmanTest, EvalWaksmanPreservesTracedTripletCase) {
-    RuntimeConfig cfg;
+    RuntimeConfig cfg = StableWaksmanConfig();
     cfg.block_size = 32;
     auto ctx = TFHEContext::CreateClientContext(cfg);
 
@@ -496,7 +623,7 @@ TEST(WaksmanTest, EvalWaksmanPreservesTracedTripletCase) {
 }
 
 TEST(WaksmanTest, EvalWaksmanPreservesTracedTripletCaseAcrossIndependentContexts) {
-    RuntimeConfig cfg;
+    RuntimeConfig cfg = StableWaksmanConfig();
     cfg.block_size = 32;
     auto client_ctx = TFHEContext::CreateClientContext(cfg);
     auto server_ctx = TFHEContext::CreateServerContext(cfg);
@@ -555,7 +682,7 @@ TEST(WaksmanTest, EvalWaksmanPreservesTracedTripletCaseAcrossIndependentContexts
 }
 
 TEST(WaksmanTest, TracedTripletPipelinePreservesDataThroughBucketCopies) {
-    RuntimeConfig cfg;
+    RuntimeConfig cfg = StableWaksmanConfig();
     cfg.block_size = 32;
     auto client_ctx = TFHEContext::CreateClientContext(cfg);
     auto server_ctx = TFHEContext::CreateServerContext(cfg);
@@ -621,7 +748,7 @@ TEST(WaksmanTest, TracedTripletPipelinePreservesDataThroughBucketCopies) {
 }
 
 TEST(WaksmanTest, SequentialTwoChildTripletReplayPreservesFirstChild) {
-    RuntimeConfig cfg;
+    RuntimeConfig cfg = StableWaksmanConfig();
     cfg.block_size = 32;
     auto client_ctx = TFHEContext::CreateClientContext(cfg);
     auto server_ctx = TFHEContext::CreateServerContext(cfg);
@@ -692,7 +819,7 @@ TEST(WaksmanTest, SequentialTwoChildTripletReplayPreservesFirstChild) {
 }
 
 TEST(WaksmanTest, TracedTripletPipelinePreservesDataAcrossNetIOTransport) {
-    RuntimeConfig cfg;
+    RuntimeConfig cfg = StableWaksmanConfig();
     cfg.block_size = 32;
     const int port = NextPort();
 
@@ -801,7 +928,7 @@ TEST(WaksmanTest, TracedTripletPipelinePreservesDataAcrossNetIOTransport) {
 }
 
 TEST(WaksmanTest, TracedTripletPipelinePreservesDataAcrossNetIOAfterBidirectionalTraffic) {
-    RuntimeConfig cfg;
+    RuntimeConfig cfg = StableWaksmanConfig();
     cfg.block_size = 32;
     const int port = NextPort();
 

@@ -47,3 +47,5 @@
 - [x] Task 1: Preserve current safe baseline
 - [x] Task 2: Vendor a stable Torus64 TFHE backend
 - [x] Task 3: Convert vendored backend from 32-bit to 64-bit torus arithmetic
+- [x] Task 4: Introduce explicit Onion Ring gadget parameter sets
+- [x] Task 5: Route recursive payloads through swap params and -s through neg-secret params

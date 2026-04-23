@@ -85,10 +85,26 @@ class LweKeySwitchKeyHandle {
     LweKeySwitchKey* key_ = nullptr;
 };
 
+struct RecursiveRlweKeySwitchKey {
+    int32_t substitution_power = 0;
+    int32_t basebit = 0;
+    std::vector<RLWECiphertext> levels;
+
+    std::vector<uint8_t> Serialize() const;
+    static RecursiveRlweKeySwitchKey Deserialize(const std::vector<uint8_t>& data,
+                                                 const TLweParams* params);
+};
+
 struct ExpansionBundle {
     std::vector<RGSWCiphertext> substitution_keys;
     std::vector<LweKeySwitchKeyHandle> lwe_key_switch_keys;
+    std::vector<RecursiveRlweKeySwitchKey> recursive_ks_keys;
     std::vector<uint8_t> neg_sk_rgsw_bytes;
+    int32_t swap_l = 0;
+    int32_t swap_bgbit = 0;
+    int32_t neg_sk_l = 0;
+    int32_t neg_sk_bgbit = 0;
+    int32_t torus_bits = 0;
 
     std::vector<uint8_t> Serialize() const;
     static ExpansionBundle Deserialize(const std::vector<uint8_t>& data,
@@ -99,9 +115,17 @@ struct ExpansionBundle {
 
 struct TFHEContext {
     TLweParams* tlwe_params = nullptr;
+    TGswParams* swap_tgsw_params = nullptr;
+    TGswParams* neg_sk_tgsw_params = nullptr;
+    TGswParams* practical_tgsw_params = nullptr;
     TGswParams* tgsw_params = nullptr;
     TLweKey* tlwe_key = nullptr;
+    TGswKey* swap_tgsw_key = nullptr;
+    TGswKey* neg_sk_tgsw_key = nullptr;
+    TGswKey* practical_tgsw_key = nullptr;
     TGswKey* tgsw_key = nullptr;
+    int32_t rlwe_ks_basebit = 0;
+    int32_t rlwe_ks_length = 0;
     double alpha = 0.0;
 
     TFHEContext() = default;
@@ -120,10 +144,13 @@ struct TFHEContext {
 };
 
 ExpansionBundle BuildExpansionBundle(const TFHEContext& ctx);
+ExpansionBundle BuildRecursiveExpansionBundle(const TFHEContext& ctx);
 RGSWCiphertext EncryptNegatedSecretKey(const TFHEContext& ctx);
 RLWECiphertext EncryptBlock(const std::vector<uint8_t>& block, const TFHEContext& ctx);
 std::vector<uint8_t> DecryptBlock(const RLWECiphertext& ciphertext, const TFHEContext& ctx,
                                   size_t block_size);
+RGSWCiphertext EncryptSwapBit(bool bit, const TFHEContext& ctx);
+RGSWCiphertext EncryptPracticalBit(bool bit, const TFHEContext& ctx);
 RGSWCiphertext EncryptBit(bool bit, const TFHEContext& ctx);
 bool DecryptBit(const RGSWCiphertext& ciphertext, const TFHEContext& ctx);
 

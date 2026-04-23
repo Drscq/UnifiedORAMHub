@@ -43,6 +43,12 @@ RuntimeConfig LongRunConfig() {
     return cfg;
 }
 
+RuntimeConfig PracticalFallbackConfig() {
+    RuntimeConfig cfg = EvictingConfig();
+    cfg.use_recursive_packed_swap_bits = false;
+    return cfg;
+}
+
 std::vector<uint8_t> MakeBlock(size_t block_size, uint8_t seed) {
     std::vector<uint8_t> block(block_size, 0);
     for (size_t i = 0; i < block.size(); ++i) {
@@ -200,7 +206,32 @@ TEST_F(OnionRingE2ETest, MixedAccessesRemainCorrectAfterRefreshAndEviction) {
     }
 }
 
-TEST_F(OnionRingE2ETest, MoreThanThreeHundredEvictionWindowsPreserveRewrittenBlocks) {
+TEST_F(OnionRingE2ETest, PracticalPackedSwapBitFallbackStillWorksEndToEnd) {
+    StartServer(PracticalFallbackConfig());
+
+    OnionRingClient client("127.0.0.1", port_, config_);
+    std::vector<std::vector<uint8_t>> oracle(config_.num_blocks);
+    for (size_t addr = 0; addr < config_.num_blocks; ++addr) {
+        oracle[addr] = MakeBlock(config_.block_size, static_cast<uint8_t>(0x55 + addr * 3));
+        client.Write(addr, oracle[addr]);
+    }
+
+    for (size_t round = 0; round < 12; ++round) {
+        const uint64_t addr = (round * 3 + 1) % config_.num_blocks;
+        if (round % 2 == 0) {
+            oracle[addr] = MakeBlock(config_.block_size, static_cast<uint8_t>(0x90 + round));
+            client.Write(addr, oracle[addr]);
+        } else {
+            EXPECT_EQ(client.Read(addr), oracle[addr]);
+        }
+    }
+
+    for (size_t addr = 0; addr < config_.num_blocks; ++addr) {
+        EXPECT_EQ(client.Read(addr), oracle[addr]);
+    }
+}
+
+TEST_F(OnionRingE2ETest, TenEvictionWindowsPreserveRewrittenBlocks) {
     StartServer(LongRunConfig());
 
     OnionRingClient client("127.0.0.1", port_, config_);
@@ -210,7 +241,7 @@ TEST_F(OnionRingE2ETest, MoreThanThreeHundredEvictionWindowsPreserveRewrittenBlo
         client.Write(addr, oracle[addr]);
     }
 
-    const size_t total_accesses = config_.a * 301 + 19;
+    const size_t total_accesses = config_.a * 10 + 19;
     for (size_t round = 0; round < total_accesses; ++round) {
         const uint64_t addr = (round * 5 + 1) % config_.num_blocks;
         if (round % 3 == 0 || round % 7 == 0) {

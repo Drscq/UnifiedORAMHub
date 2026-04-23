@@ -1,11 +1,14 @@
 #include "oram/onion_ring/TFHEAdapter.h"
 
 #include <cstring>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
 
 #include "lwe-functions.h"
+#include "numeric_functions.h"
+#include "polynomials.h"
 #include "tfhe_io.h"
 #include "tlwe_functions.h"
 
@@ -14,11 +17,12 @@ namespace oram::onion_ring {
 namespace {
 
 TLweParams* CreateTLweParams(const RuntimeConfig& config) {
-    return new_TLweParams(config.tlwe_n, config.tlwe_k, config.alpha, 1.0 / 16.0);
+    const int32_t n = config.use_recursive_packed_swap_bits ? config.recursive_tlwe_n : config.tlwe_n;
+    return new_TLweParams(n, config.tlwe_k, config.alpha, 1.0 / 16.0);
 }
 
-TGswParams* CreateTGswParams(const RuntimeConfig& config, const TLweParams* tlwe_params) {
-    return new_TGswParams(config.tgsw_l, config.tgsw_bgbit, tlwe_params);
+TGswParams* CreateTGswParams(int32_t l, int32_t bgbit, const TLweParams* tlwe_params) {
+    return new_TGswParams(l, bgbit, tlwe_params);
 }
 
 void CheckClientTlweKey(const TFHEContext& ctx) {
@@ -33,16 +37,68 @@ void CheckClientTgswKey(const TFHEContext& ctx) {
     }
 }
 
+void CheckClientSwapTgswKey(const TFHEContext& ctx) {
+    if (ctx.swap_tgsw_key == nullptr) {
+        throw std::runtime_error("TFHE client swap TGSW key is not initialized");
+    }
+}
+
+void CheckClientPracticalTgswKey(const TFHEContext& ctx) {
+    if (ctx.practical_tgsw_key == nullptr) {
+        throw std::runtime_error("TFHE client practical TGSW key is not initialized");
+    }
+}
+
+void CheckClientNegSkTgswKey(const TFHEContext& ctx) {
+    if (ctx.neg_sk_tgsw_key == nullptr) {
+        throw std::runtime_error("TFHE client negated-secret-key TGSW key is not initialized");
+    }
+}
+
+void CopyTlweSecretKey(TLweKey* dst, const TLweKey* src) {
+    if (dst == nullptr || src == nullptr || dst->params->N != src->params->N ||
+        dst->params->k != src->params->k) {
+        throw std::invalid_argument("Cannot copy incompatible TLWE secret keys");
+    }
+    for (int block = 0; block < src->params->k; ++block) {
+        for (int coeff = 0; coeff < src->params->N; ++coeff) {
+            dst->key[block].coefs[coeff] = src->key[block].coefs[coeff];
+        }
+    }
+}
+
+void PopulateExpansionMetadata(ExpansionBundle* bundle, const TFHEContext& ctx) {
+    bundle->swap_l = ctx.swap_tgsw_params != nullptr ? ctx.swap_tgsw_params->l : 0;
+    bundle->swap_bgbit = ctx.swap_tgsw_params != nullptr ? ctx.swap_tgsw_params->Bgbit : 0;
+    bundle->neg_sk_l = ctx.neg_sk_tgsw_params != nullptr ? ctx.neg_sk_tgsw_params->l : 0;
+    bundle->neg_sk_bgbit = ctx.neg_sk_tgsw_params != nullptr ? ctx.neg_sk_tgsw_params->Bgbit : 0;
+    bundle->torus_bits = TFHE_TORUS_BITS;
+}
+
+void ValidateExpansionMetadata(const ExpansionBundle& bundle, const RuntimeConfig& config) {
+    if (bundle.torus_bits != TFHE_TORUS_BITS) {
+        throw std::runtime_error("Expansion bundle torus width does not match runtime backend");
+    }
+    if (bundle.swap_l != config.swap_tgsw_l || bundle.swap_bgbit != config.swap_tgsw_bgbit ||
+        bundle.neg_sk_l != config.neg_sk_tgsw_l ||
+        bundle.neg_sk_bgbit != config.neg_sk_tgsw_bgbit) {
+        throw std::runtime_error("Expansion bundle gadget parameters do not match runtime config");
+    }
+}
+
 TorusPolynomial* EncodeBlock(const std::vector<uint8_t>& block, const TLweParams* params) {
-    if (block.size() > static_cast<size_t>(params->N)) {
-        throw std::invalid_argument("Block size exceeds TLWE polynomial dimension");
+    if (block.size() * 2 > static_cast<size_t>(params->N)) {
+        throw std::invalid_argument("Block size exceeds nibble-packed TLWE polynomial capacity");
     }
 
     TorusPolynomial* poly = new_TorusPolynomial(params->N);
     for (size_t i = 0; i < block.size(); ++i) {
-        poly->coefsT[i] = modSwitchToTorus32(block[i], 256);
+        const uint8_t low_nibble = static_cast<uint8_t>(block[i] & 0x0F);
+        const uint8_t high_nibble = static_cast<uint8_t>((block[i] >> 4U) & 0x0F);
+        poly->coefsT[2 * i] = modSwitchToTorus32(low_nibble, 16);
+        poly->coefsT[2 * i + 1] = modSwitchToTorus32(high_nibble, 16);
     }
-    for (int i = static_cast<int>(block.size()); i < params->N; ++i) {
+    for (int i = static_cast<int>(block.size() * 2); i < params->N; ++i) {
         poly->coefsT[i] = 0;
     }
     return poly;
@@ -51,7 +107,10 @@ TorusPolynomial* EncodeBlock(const std::vector<uint8_t>& block, const TLweParams
 std::vector<uint8_t> DecodeBlock(const TorusPolynomial* poly, size_t block_size) {
     std::vector<uint8_t> block(block_size, 0);
     for (size_t i = 0; i < block_size; ++i) {
-        block[i] = static_cast<uint8_t>(modSwitchFromTorus32(poly->coefsT[i], 256));
+        const uint8_t low_nibble = static_cast<uint8_t>(modSwitchFromTorus32(poly->coefsT[2 * i], 16));
+        const uint8_t high_nibble =
+            static_cast<uint8_t>(modSwitchFromTorus32(poly->coefsT[2 * i + 1], 16));
+        block[i] = static_cast<uint8_t>((high_nibble << 4U) | low_nibble);
     }
     return block;
 }
@@ -89,6 +148,25 @@ std::vector<uint8_t> ReadBytes(std::istream* stream) {
     return bytes;
 }
 
+void ApplyAutomorphismToIntPolynomial(IntPolynomial* result, const IntPolynomial* input, int32_t power) {
+    const int n = input->N;
+    if ((power & 1) == 0) {
+        throw std::invalid_argument("Automorphism power must be odd");
+    }
+
+    for (int coeff = 0; coeff < n; ++coeff) {
+        result->coefs[coeff] = 0;
+    }
+    for (int coeff = 0; coeff < n; ++coeff) {
+        const int64_t mapped = (static_cast<int64_t>(coeff) * power) % (2LL * n);
+        if (mapped < n) {
+            result->coefs[mapped] = input->coefs[coeff];
+        } else {
+            result->coefs[mapped - n] = -input->coefs[coeff];
+        }
+    }
+}
+
 LweKeySwitchKeyHandle BuildIdentityKeySwitchKey(const TFHEContext& ctx) {
     const LweParams* extract_params = &ctx.tlwe_params->extracted_lweparams;
     LweKey* extracted_key = new_LweKey(extract_params);
@@ -102,7 +180,7 @@ LweKeySwitchKeyHandle BuildIdentityKeySwitchKey(const TFHEContext& ctx) {
 
 RGSWCiphertext BuildNegatedSecretKeyCiphertext(const TFHEContext& ctx) {
     CheckClientTlweKey(ctx);
-    CheckClientTgswKey(ctx);
+    CheckClientNegSkTgswKey(ctx);
     if (ctx.tlwe_params->k != 1) {
         throw std::invalid_argument("Negated-secret-key support currently expects TLWE k == 1");
     }
@@ -112,10 +190,66 @@ RGSWCiphertext BuildNegatedSecretKeyCiphertext(const TFHEContext& ctx) {
         neg_secret->coefs[coeff] = -ctx.tlwe_key->key[0].coefs[coeff];
     }
 
-    RGSWCiphertext ciphertext(ctx.tgsw_params);
-    tGswSymEncrypt(ciphertext.Get(), neg_secret, 0.0, ctx.tgsw_key);
+    RGSWCiphertext ciphertext(ctx.neg_sk_tgsw_params);
+    tGswSymEncrypt(ciphertext.Get(), neg_secret, 0.0, ctx.neg_sk_tgsw_key);
     delete_IntPolynomial(neg_secret);
     return ciphertext;
+}
+
+RGSWCiphertext BuildSubstitutionMonomialCiphertext(const TFHEContext& ctx, int exponent) {
+    CheckClientSwapTgswKey(ctx);
+    if (exponent <= 0 || exponent >= ctx.tlwe_params->N) {
+        throw std::out_of_range("Substitution monomial exponent must be in (0, N)");
+    }
+
+    IntPolynomial* monomial = new_IntPolynomial(ctx.tlwe_params->N);
+    for (int coeff = 0; coeff < ctx.tlwe_params->N; ++coeff) {
+        monomial->coefs[coeff] = 0;
+    }
+    monomial->coefs[exponent] = 1;
+
+    RGSWCiphertext ciphertext(ctx.swap_tgsw_params);
+    tGswSymEncrypt(ciphertext.Get(), monomial, ctx.alpha, ctx.swap_tgsw_key);
+    delete_IntPolynomial(monomial);
+    return ciphertext;
+}
+
+RecursiveRlweKeySwitchKey BuildRecursiveRlweKeySwitchKey(const TFHEContext& ctx, int32_t power,
+                                                         int32_t basebit, int32_t length) {
+    if (ctx.tlwe_key == nullptr || ctx.tlwe_params == nullptr) {
+        throw std::invalid_argument("Recursive RLWE key switching requires initialized TLWE key material");
+    }
+    if ((power & 1) == 0) {
+        throw std::invalid_argument("Recursive RLWE substitution power must be odd");
+    }
+    if (basebit <= 0 || length <= 0 || basebit * length > 31) {
+        throw std::invalid_argument("Recursive RLWE key switching requires Torus32-compatible decomposition parameters");
+    }
+
+    RecursiveRlweKeySwitchKey key;
+    key.substitution_power = power;
+    key.basebit = basebit;
+
+    TGswParams* decomp_params = new_TGswParams(length, basebit, ctx.tlwe_params);
+    IntPolynomial* transformed_secret = new_IntPolynomial(ctx.tlwe_params->N);
+    ApplyAutomorphismToIntPolynomial(transformed_secret, &ctx.tlwe_key->key[0], power);
+
+    key.levels.reserve(static_cast<size_t>(length));
+    for (int level = 0; level < length; ++level) {
+        RLWECiphertext row(ctx.tlwe_params);
+        TorusPolynomial* message = new_TorusPolynomial(ctx.tlwe_params->N);
+        const Torus32 scale = decomp_params->h[level];
+        for (int coeff = 0; coeff < ctx.tlwe_params->N; ++coeff) {
+            message->coefsT[coeff] = transformed_secret->coefs[coeff] * scale;
+        }
+        tLweSymEncrypt(row.Get(), message, ctx.alpha, ctx.tlwe_key);
+        delete_TorusPolynomial(message);
+        key.levels.emplace_back(std::move(row));
+    }
+
+    delete_IntPolynomial(transformed_secret);
+    delete_TGswParams(decomp_params);
+    return key;
 }
 
 }  // namespace
@@ -245,8 +379,42 @@ void LweKeySwitchKeyHandle::Reset() {
     }
 }
 
+std::vector<uint8_t> RecursiveRlweKeySwitchKey::Serialize() const {
+    std::ostringstream stream(std::ios::binary | std::ios::out);
+    WriteUint64(&stream, static_cast<uint64_t>(substitution_power));
+    WriteUint64(&stream, static_cast<uint64_t>(basebit));
+    WriteUint64(&stream, levels.size());
+    for (const auto& level : levels) {
+        WriteBytes(&stream, level.Serialize());
+    }
+    const std::string serialized = stream.str();
+    return std::vector<uint8_t>(serialized.begin(), serialized.end());
+}
+
+RecursiveRlweKeySwitchKey RecursiveRlweKeySwitchKey::Deserialize(const std::vector<uint8_t>& data,
+                                                                 const TLweParams* params) {
+    const std::string serialized(data.begin(), data.end());
+    std::istringstream stream(serialized, std::ios::binary | std::ios::in);
+
+    RecursiveRlweKeySwitchKey key;
+    key.substitution_power = static_cast<int32_t>(ReadUint64(&stream));
+    key.basebit = static_cast<int32_t>(ReadUint64(&stream));
+    const uint64_t level_count = ReadUint64(&stream);
+    key.levels.reserve(level_count);
+    for (uint64_t i = 0; i < level_count; ++i) {
+        key.levels.emplace_back(RLWECiphertext::Deserialize(ReadBytes(&stream), params));
+    }
+    return key;
+}
+
 std::vector<uint8_t> ExpansionBundle::Serialize() const {
     std::ostringstream stream(std::ios::binary | std::ios::out);
+
+    WriteUint64(&stream, static_cast<uint64_t>(swap_l));
+    WriteUint64(&stream, static_cast<uint64_t>(swap_bgbit));
+    WriteUint64(&stream, static_cast<uint64_t>(neg_sk_l));
+    WriteUint64(&stream, static_cast<uint64_t>(neg_sk_bgbit));
+    WriteUint64(&stream, static_cast<uint64_t>(torus_bits));
 
     WriteUint64(&stream, substitution_keys.size());
     for (const auto& key : substitution_keys) {
@@ -255,6 +423,11 @@ std::vector<uint8_t> ExpansionBundle::Serialize() const {
 
     WriteUint64(&stream, lwe_key_switch_keys.size());
     for (const auto& key : lwe_key_switch_keys) {
+        WriteBytes(&stream, key.Serialize());
+    }
+
+    WriteUint64(&stream, recursive_ks_keys.size());
+    for (const auto& key : recursive_ks_keys) {
         WriteBytes(&stream, key.Serialize());
     }
 
@@ -268,13 +441,18 @@ ExpansionBundle ExpansionBundle::Deserialize(const std::vector<uint8_t>& data,
                                             const RuntimeConfig& config,
                                             const TLweParams* tlwe_params,
                                             const TGswParams* tgsw_params) {
-    (void)config;
     (void)tlwe_params;
 
     const std::string serialized(data.begin(), data.end());
     std::istringstream stream(serialized, std::ios::binary | std::ios::in);
 
     ExpansionBundle bundle;
+    bundle.swap_l = static_cast<int32_t>(ReadUint64(&stream));
+    bundle.swap_bgbit = static_cast<int32_t>(ReadUint64(&stream));
+    bundle.neg_sk_l = static_cast<int32_t>(ReadUint64(&stream));
+    bundle.neg_sk_bgbit = static_cast<int32_t>(ReadUint64(&stream));
+    bundle.torus_bits = static_cast<int32_t>(ReadUint64(&stream));
+    ValidateExpansionMetadata(bundle, config);
 
     const uint64_t substitution_key_count = ReadUint64(&stream);
     bundle.substitution_keys.reserve(substitution_key_count);
@@ -290,6 +468,13 @@ ExpansionBundle ExpansionBundle::Deserialize(const std::vector<uint8_t>& data,
             LweKeySwitchKeyHandle::Deserialize(ReadBytes(&stream)));
     }
 
+    const uint64_t recursive_key_count = ReadUint64(&stream);
+    bundle.recursive_ks_keys.reserve(recursive_key_count);
+    for (uint64_t i = 0; i < recursive_key_count; ++i) {
+        bundle.recursive_ks_keys.emplace_back(
+            RecursiveRlweKeySwitchKey::Deserialize(ReadBytes(&stream), tlwe_params));
+    }
+
     bundle.neg_sk_rgsw_bytes = ReadBytes(&stream);
     return bundle;
 }
@@ -298,18 +483,34 @@ TFHEContext::~TFHEContext() { Reset(); }
 
 TFHEContext::TFHEContext(TFHEContext&& other) noexcept
     : tlwe_params(std::exchange(other.tlwe_params, nullptr)),
+      swap_tgsw_params(std::exchange(other.swap_tgsw_params, nullptr)),
+      neg_sk_tgsw_params(std::exchange(other.neg_sk_tgsw_params, nullptr)),
+      practical_tgsw_params(std::exchange(other.practical_tgsw_params, nullptr)),
       tgsw_params(std::exchange(other.tgsw_params, nullptr)),
       tlwe_key(std::exchange(other.tlwe_key, nullptr)),
+      swap_tgsw_key(std::exchange(other.swap_tgsw_key, nullptr)),
+      neg_sk_tgsw_key(std::exchange(other.neg_sk_tgsw_key, nullptr)),
+      practical_tgsw_key(std::exchange(other.practical_tgsw_key, nullptr)),
       tgsw_key(std::exchange(other.tgsw_key, nullptr)),
+      rlwe_ks_basebit(other.rlwe_ks_basebit),
+      rlwe_ks_length(other.rlwe_ks_length),
       alpha(other.alpha) {}
 
 TFHEContext& TFHEContext::operator=(TFHEContext&& other) noexcept {
     if (this != &other) {
         Reset();
         tlwe_params = std::exchange(other.tlwe_params, nullptr);
+        swap_tgsw_params = std::exchange(other.swap_tgsw_params, nullptr);
+        neg_sk_tgsw_params = std::exchange(other.neg_sk_tgsw_params, nullptr);
+        practical_tgsw_params = std::exchange(other.practical_tgsw_params, nullptr);
         tgsw_params = std::exchange(other.tgsw_params, nullptr);
         tlwe_key = std::exchange(other.tlwe_key, nullptr);
+        swap_tgsw_key = std::exchange(other.swap_tgsw_key, nullptr);
+        neg_sk_tgsw_key = std::exchange(other.neg_sk_tgsw_key, nullptr);
+        practical_tgsw_key = std::exchange(other.practical_tgsw_key, nullptr);
         tgsw_key = std::exchange(other.tgsw_key, nullptr);
+        rlwe_ks_basebit = other.rlwe_ks_basebit;
+        rlwe_ks_length = other.rlwe_ks_length;
         alpha = other.alpha;
     }
     return *this;
@@ -318,36 +519,80 @@ TFHEContext& TFHEContext::operator=(TFHEContext&& other) noexcept {
 TFHEContext TFHEContext::CreateClientContext(const RuntimeConfig& config) {
     TFHEContext ctx;
     ctx.alpha = config.alpha;
+    ctx.rlwe_ks_basebit = config.rlwe_ks_basebit;
+    ctx.rlwe_ks_length = config.rlwe_ks_length;
     ctx.tlwe_params = CreateTLweParams(config);
-    ctx.tgsw_params = CreateTGswParams(config, ctx.tlwe_params);
-    ctx.tgsw_key = new_TGswKey(ctx.tgsw_params);
-    tGswKeyGen(ctx.tgsw_key);
-    ctx.tlwe_key = &ctx.tgsw_key->tlwe_key;
+    ctx.swap_tgsw_params =
+        CreateTGswParams(config.swap_tgsw_l, config.swap_tgsw_bgbit, ctx.tlwe_params);
+    ctx.neg_sk_tgsw_params =
+        CreateTGswParams(config.neg_sk_tgsw_l, config.neg_sk_tgsw_bgbit, ctx.tlwe_params);
+    ctx.practical_tgsw_params =
+        CreateTGswParams(config.practical_tgsw_l, config.practical_tgsw_bgbit, ctx.tlwe_params);
+    ctx.tgsw_params = ctx.swap_tgsw_params;
+
+    ctx.swap_tgsw_key = new_TGswKey(ctx.swap_tgsw_params);
+    tGswKeyGen(ctx.swap_tgsw_key);
+    ctx.tlwe_key = &ctx.swap_tgsw_key->tlwe_key;
+
+    ctx.neg_sk_tgsw_key = new_TGswKey(ctx.neg_sk_tgsw_params);
+    CopyTlweSecretKey(&ctx.neg_sk_tgsw_key->tlwe_key, ctx.tlwe_key);
+    ctx.practical_tgsw_key = new_TGswKey(ctx.practical_tgsw_params);
+    CopyTlweSecretKey(&ctx.practical_tgsw_key->tlwe_key, ctx.tlwe_key);
+
+    ctx.tgsw_key = ctx.swap_tgsw_key;
     return ctx;
 }
 
 TFHEContext TFHEContext::CreateServerContext(const RuntimeConfig& config) {
     TFHEContext ctx;
     ctx.alpha = config.alpha;
+    ctx.rlwe_ks_basebit = config.rlwe_ks_basebit;
+    ctx.rlwe_ks_length = config.rlwe_ks_length;
     ctx.tlwe_params = CreateTLweParams(config);
-    ctx.tgsw_params = CreateTGswParams(config, ctx.tlwe_params);
+    ctx.swap_tgsw_params =
+        CreateTGswParams(config.swap_tgsw_l, config.swap_tgsw_bgbit, ctx.tlwe_params);
+    ctx.neg_sk_tgsw_params =
+        CreateTGswParams(config.neg_sk_tgsw_l, config.neg_sk_tgsw_bgbit, ctx.tlwe_params);
+    ctx.practical_tgsw_params =
+        CreateTGswParams(config.practical_tgsw_l, config.practical_tgsw_bgbit, ctx.tlwe_params);
+    ctx.tgsw_params = ctx.swap_tgsw_params;
     return ctx;
 }
 
 void TFHEContext::Reset() {
-    if (tgsw_key != nullptr) {
-        delete_TGswKey(tgsw_key);
-        tgsw_key = nullptr;
+    if (practical_tgsw_key != nullptr) {
+        delete_TGswKey(practical_tgsw_key);
+        practical_tgsw_key = nullptr;
+    }
+    if (neg_sk_tgsw_key != nullptr) {
+        delete_TGswKey(neg_sk_tgsw_key);
+        neg_sk_tgsw_key = nullptr;
+    }
+    if (swap_tgsw_key != nullptr) {
+        delete_TGswKey(swap_tgsw_key);
+        swap_tgsw_key = nullptr;
     }
     tlwe_key = nullptr;
-    if (tgsw_params != nullptr) {
-        delete_TGswParams(tgsw_params);
-        tgsw_params = nullptr;
+    tgsw_key = nullptr;
+    if (practical_tgsw_params != nullptr) {
+        delete_TGswParams(practical_tgsw_params);
+        practical_tgsw_params = nullptr;
     }
+    if (neg_sk_tgsw_params != nullptr) {
+        delete_TGswParams(neg_sk_tgsw_params);
+        neg_sk_tgsw_params = nullptr;
+    }
+    if (swap_tgsw_params != nullptr) {
+        delete_TGswParams(swap_tgsw_params);
+        swap_tgsw_params = nullptr;
+    }
+    tgsw_params = nullptr;
     if (tlwe_params != nullptr) {
         delete_TLweParams(tlwe_params);
         tlwe_params = nullptr;
     }
+    rlwe_ks_basebit = 0;
+    rlwe_ks_length = 0;
 }
 
 ExpansionBundle BuildExpansionBundle(const TFHEContext& ctx) {
@@ -355,6 +600,7 @@ ExpansionBundle BuildExpansionBundle(const TFHEContext& ctx) {
     CheckClientTgswKey(ctx);
 
     ExpansionBundle bundle;
+    PopulateExpansionMetadata(&bundle, ctx);
 
     size_t level_count = 0;
     for (int n = ctx.tlwe_params->N; n > 1; n >>= 1) {
@@ -363,9 +609,39 @@ ExpansionBundle BuildExpansionBundle(const TFHEContext& ctx) {
 
     bundle.substitution_keys.reserve(level_count);
     bundle.lwe_key_switch_keys.reserve(level_count);
+    bundle.recursive_ks_keys.reserve(level_count);
     for (size_t level = 0; level < level_count; ++level) {
-        bundle.substitution_keys.emplace_back(EncryptBit(false, ctx));
+        bundle.substitution_keys.emplace_back(BuildSubstitutionMonomialCiphertext(
+            ctx, ctx.tlwe_params->N >> static_cast<int>(level + 1)));
         bundle.lwe_key_switch_keys.emplace_back(BuildIdentityKeySwitchKey(ctx));
+        const int32_t substitution_power =
+            (ctx.tlwe_params->N >> static_cast<int>(level)) + 1;
+        bundle.recursive_ks_keys.emplace_back(BuildRecursiveRlweKeySwitchKey(
+            ctx, substitution_power, ctx.rlwe_ks_basebit, ctx.rlwe_ks_length));
+    }
+
+    bundle.neg_sk_rgsw_bytes = BuildNegatedSecretKeyCiphertext(ctx).Serialize();
+    return bundle;
+}
+
+ExpansionBundle BuildRecursiveExpansionBundle(const TFHEContext& ctx) {
+    CheckClientTlweKey(ctx);
+    CheckClientTgswKey(ctx);
+
+    ExpansionBundle bundle;
+    PopulateExpansionMetadata(&bundle, ctx);
+
+    size_t level_count = 0;
+    for (int n = ctx.tlwe_params->N; n > 1; n >>= 1) {
+        ++level_count;
+    }
+
+    bundle.recursive_ks_keys.reserve(level_count);
+    for (size_t level = 0; level < level_count; ++level) {
+        const int32_t substitution_power =
+            (ctx.tlwe_params->N >> static_cast<int>(level)) + 1;
+        bundle.recursive_ks_keys.emplace_back(BuildRecursiveRlweKeySwitchKey(
+            ctx, substitution_power, ctx.rlwe_ks_basebit, ctx.rlwe_ks_length));
     }
 
     bundle.neg_sk_rgsw_bytes = BuildNegatedSecretKeyCiphertext(ctx).Serialize();
@@ -388,29 +664,40 @@ RLWECiphertext EncryptBlock(const std::vector<uint8_t>& block, const TFHEContext
 std::vector<uint8_t> DecryptBlock(const RLWECiphertext& ciphertext, const TFHEContext& ctx,
                                   size_t block_size) {
     CheckClientTlweKey(ctx);
-    if (block_size > static_cast<size_t>(ctx.tlwe_params->N)) {
-        throw std::invalid_argument("Requested block size exceeds TLWE polynomial dimension");
+    if (block_size * 2 > static_cast<size_t>(ctx.tlwe_params->N)) {
+        throw std::invalid_argument("Requested block size exceeds nibble-packed TLWE polynomial capacity");
     }
 
     TorusPolynomial* poly = new_TorusPolynomial(ctx.tlwe_params->N);
-    tLweSymDecrypt(poly, ciphertext.Get(), ctx.tlwe_key, 256);
+    tLweSymDecrypt(poly, ciphertext.Get(), ctx.tlwe_key, 16);
     std::vector<uint8_t> block = DecodeBlock(poly, block_size);
     delete_TorusPolynomial(poly);
     return block;
 }
 
-RGSWCiphertext EncryptBit(bool bit, const TFHEContext& ctx) {
-    CheckClientTgswKey(ctx);
-    RGSWCiphertext ciphertext(ctx.tgsw_params);
-    tGswSymEncryptInt(ciphertext.Get(), bit ? 1 : 0, ctx.alpha, ctx.tgsw_key);
+RGSWCiphertext EncryptSwapBit(bool bit, const TFHEContext& ctx) {
+    CheckClientSwapTgswKey(ctx);
+    RGSWCiphertext ciphertext(ctx.swap_tgsw_params);
+    tGswSymEncryptInt(ciphertext.Get(), bit ? 1 : 0, ctx.alpha, ctx.swap_tgsw_key);
     return ciphertext;
 }
 
+RGSWCiphertext EncryptPracticalBit(bool bit, const TFHEContext& ctx) {
+    CheckClientPracticalTgswKey(ctx);
+    RGSWCiphertext ciphertext(ctx.practical_tgsw_params);
+    tGswSymEncryptInt(ciphertext.Get(), bit ? 1 : 0, ctx.alpha, ctx.practical_tgsw_key);
+    return ciphertext;
+}
+
+RGSWCiphertext EncryptBit(bool bit, const TFHEContext& ctx) {
+    return EncryptSwapBit(bit, ctx);
+}
+
 bool DecryptBit(const RGSWCiphertext& ciphertext, const TFHEContext& ctx) {
-    CheckClientTgswKey(ctx);
-    const int ring_dimension = ctx.tgsw_params->tlwe_params->N;
+    CheckClientSwapTgswKey(ctx);
+    const int ring_dimension = ctx.swap_tgsw_params->tlwe_params->N;
     IntPolynomial* poly = new_IntPolynomial(ring_dimension);
-    tGswSymDecrypt(poly, ciphertext.Get(), ctx.tgsw_key, 2);
+    tGswSymDecrypt(poly, ciphertext.Get(), ctx.swap_tgsw_key, 2);
     const bool bit = poly->coefs[0] != 0;
     delete_IntPolynomial(poly);
     return bit;
