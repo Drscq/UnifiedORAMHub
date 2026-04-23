@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <vector>
 
@@ -21,11 +22,32 @@ std::vector<uint8_t> BlockByte(uint8_t value, size_t block_size) {
     return std::vector<uint8_t>(block_size, value);
 }
 
+RuntimeConfig PaperRecursiveConfig() {
+    RuntimeConfig cfg;
+    cfg.use_recursive_packed_swap_bits = true;
+    cfg.tlwe_n = 2048;
+    cfg.recursive_tlwe_n = 2048;
+    cfg.swap_tgsw_bgbit = 3;
+    cfg.swap_tgsw_l = 8;
+    cfg.neg_sk_tgsw_bgbit = 7;
+    cfg.neg_sk_tgsw_l = 7;
+    cfg.rlwe_ks_basebit = 3;
+    cfg.rlwe_ks_length = 20;
+    cfg.alpha = 1e-15;
+    return cfg;
+}
+
 PackedSwapBitPayload BuildManualRecursivePayload(const std::vector<size_t>& one_indices,
-                                                 const TFHEContext& ctx) {
+                                                 const TFHEContext& ctx,
+                                                 size_t bit_count = 0) {
     PackedSwapBitPayload payload;
     payload.mode = PackedSwapBitMode::kRecursiveRlwe;
-    payload.bit_count = static_cast<uint64_t>(ctx.tlwe_params->N);
+    if (bit_count == 0) {
+        for (size_t index : one_indices) {
+            bit_count = std::max(bit_count, index + 1);
+        }
+    }
+    payload.bit_count = static_cast<uint64_t>(bit_count);
     payload.bits_per_ciphertext = static_cast<uint64_t>(ctx.tlwe_params->N);
     payload.row_count = 1;
 
@@ -45,10 +67,16 @@ PackedSwapBitPayload BuildManualRecursivePayload(const std::vector<size_t>& one_
 
 PackedSwapBitPayload BuildManualRecursivePayloadForRow(const std::vector<size_t>& one_indices,
                                                        size_t target_row,
-                                                       const TFHEContext& ctx) {
+                                                       const TFHEContext& ctx,
+                                                       size_t bit_count = 0) {
     PackedSwapBitPayload payload;
     payload.mode = PackedSwapBitMode::kRecursiveRlwe;
-    payload.bit_count = static_cast<uint64_t>(ctx.tlwe_params->N);
+    if (bit_count == 0) {
+        for (size_t index : one_indices) {
+            bit_count = std::max(bit_count, index + 1);
+        }
+    }
+    payload.bit_count = static_cast<uint64_t>(bit_count);
     payload.bits_per_ciphertext = static_cast<uint64_t>(ctx.tlwe_params->N);
     payload.row_count = static_cast<uint64_t>(ctx.tgsw_params->l);
 
@@ -144,10 +172,7 @@ TEST(HomExpandTest, RecursiveModeMatchesPracticalOracleBitsForSmallPermutation) 
 }
 
 TEST(HomExpandTest, RecursiveLiftMatchesDirectControlRowPhasesForSingleBit) {
-    RuntimeConfig cfg;
-    cfg.tgsw_bgbit = 7;
-    cfg.rlwe_ks_basebit = 3;
-    cfg.rlwe_ks_length = 10;
+    RuntimeConfig cfg = PaperRecursiveConfig();
     auto client_ctx = TFHEContext::CreateClientContext(cfg);
     auto server_ctx = TFHEContext::CreateServerContext(cfg);
 
@@ -257,14 +282,11 @@ TEST(HomExpandTest, PackedAndDirectPathsDriveIdenticalWaksmanOutputs) {
 }
 
 TEST(HomExpandTest, RecursiveExpandRlweIsolatesGateBitsInOrder) {
-    RuntimeConfig cfg;
-    cfg.tgsw_bgbit = 7;
-    cfg.rlwe_ks_basebit = 3;
-    cfg.rlwe_ks_length = 10;
+    RuntimeConfig cfg = PaperRecursiveConfig();
     auto client_ctx = TFHEContext::CreateClientContext(cfg);
     auto server_ctx = TFHEContext::CreateServerContext(cfg);
 
-    ExpansionBundle bundle = BuildExpansionBundle(client_ctx);
+    ExpansionBundle bundle = BuildRecursiveExpansionBundle(client_ctx);
     std::vector<size_t> permutation = {2, 0, 3, 1};
     PackedSwapBitPayload payload = BuildRecursivePackedSwapBitPayload(permutation, client_ctx);
     const auto expected_bits = WaksmanNetwork(permutation.size()).GenerateSwapBits(permutation);
@@ -290,14 +312,11 @@ TEST(HomExpandTest, RecursiveExpandRlweIsolatesGateBitsInOrder) {
 }
 
 TEST(HomExpandTest, RecursiveSubstitutionKeySwitchReturnsToOriginalSecretKey) {
-    RuntimeConfig cfg;
+    RuntimeConfig cfg = PaperRecursiveConfig();
     cfg.block_size = 8;
-    cfg.tgsw_bgbit = 7;
-    cfg.rlwe_ks_basebit = 3;
-    cfg.rlwe_ks_length = 10;
     auto client_ctx = TFHEContext::CreateClientContext(cfg);
     auto server_ctx = TFHEContext::CreateServerContext(cfg);
-    ExpansionBundle bundle = BuildExpansionBundle(client_ctx);
+    ExpansionBundle bundle = BuildRecursiveExpansionBundle(client_ctx);
 
     TorusPolynomial* plain = new_TorusPolynomial(client_ctx.tlwe_params->N);
     torusPolynomialClear(plain);
@@ -341,17 +360,14 @@ TEST(HomExpandTest, RecursiveSubstitutionKeySwitchReturnsToOriginalSecretKey) {
 }
 
 TEST(HomExpandTest, RecursiveExpandRlweKeepsOneHotCoefficientIndices) {
-    RuntimeConfig cfg;
-    cfg.tgsw_bgbit = 7;
-    cfg.rlwe_ks_basebit = 3;
-    cfg.rlwe_ks_length = 10;
+    RuntimeConfig cfg = PaperRecursiveConfig();
     auto client_ctx = TFHEContext::CreateClientContext(cfg);
     auto server_ctx = TFHEContext::CreateServerContext(cfg);
-    ExpansionBundle bundle = BuildExpansionBundle(client_ctx);
+    ExpansionBundle bundle = BuildRecursiveExpansionBundle(client_ctx);
 
     const int row0_msize = 1 << client_ctx.tgsw_params->Bgbit;
     for (size_t hot = 0; hot < 6; ++hot) {
-        PackedSwapBitPayload payload = BuildManualRecursivePayload({hot}, client_ctx);
+        PackedSwapBitPayload payload = BuildManualRecursivePayload({hot}, client_ctx, 6);
         auto isolated = ExpandPackedRlweForTest(payload, bundle, server_ctx);
 
         std::vector<size_t> recovered;
@@ -370,19 +386,17 @@ TEST(HomExpandTest, RecursiveExpandRlweKeepsOneHotCoefficientIndices) {
 }
 
 TEST(HomExpandTest, RecursiveExpandRlweKeepsOneHotCoefficientIndicesAcrossRows) {
-    RuntimeConfig cfg;
-    cfg.tgsw_bgbit = 7;
-    cfg.rlwe_ks_basebit = 3;
-    cfg.rlwe_ks_length = 10;
+    RuntimeConfig cfg = PaperRecursiveConfig();
     auto client_ctx = TFHEContext::CreateClientContext(cfg);
     auto server_ctx = TFHEContext::CreateServerContext(cfg);
-    ExpansionBundle bundle = BuildExpansionBundle(client_ctx);
+    ExpansionBundle bundle = BuildRecursiveExpansionBundle(client_ctx);
 
+    const std::vector<size_t> hot_indices = {0, 2, 5};
     for (size_t row = 0; row < static_cast<size_t>(client_ctx.tgsw_params->l); ++row) {
         const int row_msize = 1 << (client_ctx.tgsw_params->Bgbit * static_cast<int>(row + 1));
-        for (size_t hot = 0; hot < 6; ++hot) {
+        for (size_t hot : hot_indices) {
             PackedSwapBitPayload payload =
-                BuildManualRecursivePayloadForRow({hot}, row, client_ctx);
+                BuildManualRecursivePayloadForRow({hot}, row, client_ctx, 6);
             auto isolated = ExpandPackedRlweRowForTest(payload, bundle, server_ctx, row);
 
             std::vector<size_t> recovered;
@@ -402,14 +416,11 @@ TEST(HomExpandTest, RecursiveExpandRlweKeepsOneHotCoefficientIndicesAcrossRows) 
 }
 
 TEST(HomExpandTest, RecursiveExpandRlweIsolatesGateBitsAcrossRowsInOrder) {
-    RuntimeConfig cfg;
-    cfg.tgsw_bgbit = 7;
-    cfg.rlwe_ks_basebit = 3;
-    cfg.rlwe_ks_length = 10;
+    RuntimeConfig cfg = PaperRecursiveConfig();
     auto client_ctx = TFHEContext::CreateClientContext(cfg);
     auto server_ctx = TFHEContext::CreateServerContext(cfg);
 
-    ExpansionBundle bundle = BuildExpansionBundle(client_ctx);
+    ExpansionBundle bundle = BuildRecursiveExpansionBundle(client_ctx);
     std::vector<size_t> permutation = {2, 0, 3, 1};
     PackedSwapBitPayload payload = BuildRecursivePackedSwapBitPayload(permutation, client_ctx);
     const auto expected_bits = WaksmanNetwork(permutation.size()).GenerateSwapBits(permutation);

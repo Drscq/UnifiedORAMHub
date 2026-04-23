@@ -49,3 +49,5 @@
 - [x] Task 3: Convert vendored backend from 32-bit to 64-bit torus arithmetic
 - [x] Task 4: Introduce explicit Onion Ring gadget parameter sets
 - [x] Task 5: Route recursive payloads through swap params and -s through neg-secret params
+- [x] Task 6: Update recursive key switching for 64-bit decomposition
+- [x] Task 7: Turn row-specific tests green under paper params

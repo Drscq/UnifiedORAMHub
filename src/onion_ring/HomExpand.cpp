@@ -93,8 +93,8 @@ void KeySwitchRlwe(TLweSample* result, const TLweSample* input,
     if (key.levels.empty()) {
         throw std::invalid_argument("Recursive HomExpand requires non-empty RLWE key-switch rows");
     }
-    if (key.basebit <= 0 || key.basebit * static_cast<int32_t>(key.levels.size()) > 31) {
-        throw std::invalid_argument("Recursive HomExpand key-switch parameters are not Torus32-compatible");
+    if (key.basebit <= 0 || key.basebit * static_cast<int32_t>(key.levels.size()) > 63) {
+        throw std::invalid_argument("Recursive HomExpand key-switch parameters are not Torus64-compatible");
     }
 
     TGswParams* decomp_params = new_TGswParams(static_cast<int>(key.levels.size()), key.basebit, params);
@@ -170,6 +170,48 @@ std::vector<RLWECiphertext> ExpandSinglePackedCiphertext(const RLWECiphertext& p
     return current;
 }
 
+RLWECiphertext ExpandSinglePackedCiphertextAtIndex(const RLWECiphertext& packed,
+                                                   const ExpansionBundle& bundle,
+                                                   const TFHEContext& server_ctx,
+                                                   size_t source_index) {
+    const size_t depth = bundle.recursive_ks_keys.size();
+    if (depth == 0) {
+        throw std::invalid_argument("Recursive HomExpand requires recursive key-switch material");
+    }
+    if (depth >= sizeof(size_t) * 8 || source_index >= (size_t{1} << depth)) {
+        throw std::out_of_range("Recursive HomExpand source index exceeds expansion depth");
+    }
+
+    RLWECiphertext current(server_ctx.tlwe_params);
+    tLweCopy(current.Get(), packed.Get(), server_ctx.tlwe_params);
+
+    for (size_t level = 0; level < depth; ++level) {
+        const int32_t power =
+            (server_ctx.tlwe_params->N >> static_cast<int>(level)) + 1;
+        const auto& key = LookupRecursiveKey(bundle, power);
+        RLWECiphertext substituted =
+            SubstituteAndKeySwitch(current, key, server_ctx.tlwe_params);
+
+        const bool take_odd_branch = ((source_index >> (depth - 1 - level)) & 1ULL) != 0;
+        RLWECiphertext next(server_ctx.tlwe_params);
+        if (!take_odd_branch) {
+            tLweCopy(next.Get(), current.Get(), server_ctx.tlwe_params);
+            tLweAddTo(next.Get(), substituted.Get(), server_ctx.tlwe_params);
+        } else {
+            RLWECiphertext odd_delta(server_ctx.tlwe_params);
+            tLweCopy(odd_delta.Get(), current.Get(), server_ctx.tlwe_params);
+            tLweSubTo(odd_delta.Get(), substituted.Get(), server_ctx.tlwe_params);
+            const int32_t odd_shift = 1 << static_cast<int>(level);
+            MultiplyByMonomial(next.Get(), odd_delta.Get(),
+                               2 * server_ctx.tlwe_params->N - odd_shift,
+                               server_ctx.tlwe_params);
+        }
+        current = std::move(next);
+    }
+
+    return current;
+}
+
 std::vector<RLWECiphertext> ExpandPackedRlweRow(const PackedSwapBitPayload& payload,
                                                 const ExpansionBundle& bundle,
                                                 const TFHEContext& server_ctx,
@@ -189,18 +231,31 @@ std::vector<RLWECiphertext> ExpandPackedRlweRow(const PackedSwapBitPayload& payl
     std::vector<RLWECiphertext> expanded;
     expanded.reserve(payload.bit_count);
     const size_t depth = bundle.recursive_ks_keys.size();
+    if (depth >= sizeof(size_t) * 8) {
+        throw std::runtime_error("Recursive HomExpand depth exceeds host index width");
+    }
+    const size_t full_expansion_size = size_t{1} << depth;
     for (size_t chunk = 0; chunk < chunk_count; ++chunk) {
         const size_t payload_index = row_index * chunk_count + chunk;
         RLWECiphertext packed =
             RLWECiphertext::Deserialize(payload.ciphertexts[payload_index], server_ctx.tlwe_params);
-        auto isolated = ExpandSinglePackedCiphertext(packed, bundle, server_ctx);
 
         const size_t expected = std::min(static_cast<size_t>(payload.bits_per_ciphertext),
                                          static_cast<size_t>(payload.bit_count) -
                                              chunk * static_cast<size_t>(payload.bits_per_ciphertext));
-        if (isolated.size() < expected) {
+        if (full_expansion_size < expected) {
             throw std::runtime_error("Recursive HomExpand produced fewer isolated coefficients than expected");
         }
+        if (expected < full_expansion_size) {
+            for (size_t i = 0; i < expected; ++i) {
+                const size_t source_index = ReverseBits(i, depth);
+                expanded.emplace_back(
+                    ExpandSinglePackedCiphertextAtIndex(packed, bundle, server_ctx, source_index));
+            }
+            continue;
+        }
+
+        auto isolated = ExpandSinglePackedCiphertext(packed, bundle, server_ctx);
         for (size_t i = 0; i < expected; ++i) {
             const size_t source_index = ReverseBits(i, depth);
             if (source_index >= isolated.size()) {

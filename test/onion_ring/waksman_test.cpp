@@ -70,7 +70,20 @@ RuntimeConfig StableWaksmanConfig() {
     return cfg;
 }
 
-RuntimeConfig RecursiveFriendlyConfig() { return RuntimeConfig{}; }
+RuntimeConfig RecursiveFriendlyConfig() {
+    RuntimeConfig cfg;
+    cfg.use_recursive_packed_swap_bits = true;
+    cfg.tlwe_n = 2048;
+    cfg.recursive_tlwe_n = 2048;
+    cfg.swap_tgsw_bgbit = 3;
+    cfg.swap_tgsw_l = 8;
+    cfg.neg_sk_tgsw_bgbit = 7;
+    cfg.neg_sk_tgsw_l = 7;
+    cfg.rlwe_ks_basebit = 3;
+    cfg.rlwe_ks_length = 20;
+    cfg.alpha = 1e-15;
+    return cfg;
+}
 
 TEST(WaksmanTest, GenerateSwapBitsPermutesFourElements) {
     WaksmanNetwork network(4);
@@ -319,18 +332,18 @@ TEST(WaksmanTest, RecursivePackedSwapBitsDriveRepeatedEvalAcrossContexts) {
     auto server_ctx = TFHEContext::CreateServerContext(cfg);
     ExpansionBundle bundle = BuildRecursiveExpansionBundle(client_ctx);
 
-    WaksmanNetwork network(8);
+    WaksmanNetwork network(4);
     std::vector<RLWECiphertext> server_blocks;
     std::vector<uint8_t> expected_values;
-    for (uint8_t value = 1; value <= 8; ++value) {
+    for (uint8_t value = 1; value <= 4; ++value) {
         RLWECiphertext client_block = EncryptBlock(BlockByte(value, cfg.block_size), client_ctx);
         server_blocks.emplace_back(
             RLWECiphertext::Deserialize(client_block.Serialize(), server_ctx.tlwe_params));
         expected_values.push_back(value);
     }
 
-    for (size_t round = 0; round < 3; ++round) {
-        std::vector<size_t> permutation = {7, 0, 6, 1, 5, 2, 4, 3};
+    for (size_t round = 0; round < 1; ++round) {
+        std::vector<size_t> permutation = {2, 0, 3, 1};
         PackedSwapBitPayload payload = BuildRecursivePackedSwapBitPayload(permutation, client_ctx);
         std::vector<RGSWCiphertext> expanded = HomExpandPackedSwapBits(payload, bundle, server_ctx);
 

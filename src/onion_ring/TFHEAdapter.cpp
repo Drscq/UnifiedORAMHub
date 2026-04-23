@@ -222,8 +222,8 @@ RecursiveRlweKeySwitchKey BuildRecursiveRlweKeySwitchKey(const TFHEContext& ctx,
     if ((power & 1) == 0) {
         throw std::invalid_argument("Recursive RLWE substitution power must be odd");
     }
-    if (basebit <= 0 || length <= 0 || basebit * length > 31) {
-        throw std::invalid_argument("Recursive RLWE key switching requires Torus32-compatible decomposition parameters");
+    if (basebit <= 0 || length <= 0 || basebit * length > 63) {
+        throw std::invalid_argument("Recursive RLWE key switching requires Torus64-compatible decomposition parameters");
     }
 
     RecursiveRlweKeySwitchKey key;
