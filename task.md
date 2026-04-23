@@ -27,6 +27,12 @@
 - [x] Task 25: Update README usage and manual validation notes for the packed path
 - [ ] Task 26: Return to the paper-faithful recursive RLWE coefficient-expansion follow-up
 
+## Task 26 Batch 1
+
+- [x] Task 26.1: Add dual-mode recursive-path tests and transport scaffolding
+- [/] Task 26.2: Make the expansion bundle real for recursive substitution
+- [ ] Task 26.3: Implement recursive RLWE coefficient isolation
+
 ## Paper-Faithful HomExpand Design Pass
 
 - [x] Explore project context
@@ -35,3 +41,9 @@
 - [x] Present updated design for approval
 - [x] Write updated design doc
 - [x] Transition to implementation planning
+
+## Torus64 Recursive Onion Ring Migration
+
+- [x] Task 1: Preserve current safe baseline
+- [x] Task 2: Vendor a stable Torus64 TFHE backend
+- [x] Task 3: Convert vendored backend from 32-bit to 64-bit torus arithmetic

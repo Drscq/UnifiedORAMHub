@@ -6,18 +6,24 @@ include(FetchContent)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+option(ONION_RING_USE_TFHE64 "Use local Torus64-capable TFHE backend" ON)
 
 # Find OpenSSL
 find_package(OpenSSL REQUIRED)
 
-FetchContent_Declare(
-    tfhe
-    GIT_REPOSITORY https://github.com/tfhe/tfhe.git
-    GIT_TAG        v1.0.1
-    SOURCE_SUBDIR  src
-)
 set(ENABLE_TESTS OFF CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(tfhe)
+if(ONION_RING_USE_TFHE64)
+    set(tfhe_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tfhe64)
+    add_subdirectory(third_party/tfhe64/src tfhe64-build)
+else()
+    FetchContent_Declare(
+        tfhe
+        GIT_REPOSITORY https://github.com/tfhe/tfhe.git
+        GIT_TAG        v1.0.1
+        SOURCE_SUBDIR  src
+    )
+    FetchContent_MakeAvailable(tfhe)
+endif()
 
 foreach(tfhe_target
         tfhe-core

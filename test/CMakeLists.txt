@@ -29,6 +29,7 @@ gtest_discover_tests(oram_tests)
 
 add_executable(onion_ring_tests
     onion_ring/tfhe_adapter_test.cpp
+    onion_ring/tfhe64_backend_test.cpp
     onion_ring/hom_ops_test.cpp
     onion_ring/waksman_test.cpp
     onion_ring/homexpand_test.cpp
