@@ -49,6 +49,17 @@ RuntimeConfig PracticalFallbackConfig() {
     return cfg;
 }
 
+RuntimeConfig RecursiveCutoverSmokeConfig() {
+    RuntimeConfig cfg;
+    cfg.z = 1;
+    cfg.s = 1;
+    cfg.a = 2;
+    cfg.tree_height = 1;
+    cfg.num_blocks = 2;
+    cfg.block_size = 8;
+    return cfg;
+}
+
 std::vector<uint8_t> MakeBlock(size_t block_size, uint8_t seed) {
     std::vector<uint8_t> block(block_size, 0);
     for (size_t i = 0; i < block.size(); ++i) {
@@ -229,6 +240,28 @@ TEST_F(OnionRingE2ETest, PracticalPackedSwapBitFallbackStillWorksEndToEnd) {
     for (size_t addr = 0; addr < config_.num_blocks; ++addr) {
         EXPECT_EQ(client.Read(addr), oracle[addr]);
     }
+}
+
+TEST_F(OnionRingE2ETest, RecursiveDefaultPackedSwapBitsSurviveMinimalEviction) {
+    RuntimeConfig config = RecursiveCutoverSmokeConfig();
+    ASSERT_TRUE(config.use_recursive_packed_swap_bits);
+
+    StartServer(config);
+
+    OnionRingClient client("127.0.0.1", port_, config_);
+    std::vector<std::vector<uint8_t>> oracle(config_.num_blocks);
+    oracle[0] = MakeBlock(config_.block_size, 0x61);
+    oracle[1] = MakeBlock(config_.block_size, 0x72);
+
+    client.Write(0, oracle[0]);
+    client.Write(1, oracle[1]);
+    EXPECT_EQ(client.Read(0), oracle[0]);
+
+    oracle[1] = MakeBlock(config_.block_size, 0x83);
+    client.Write(1, oracle[1]);
+
+    EXPECT_EQ(client.Read(1), oracle[1]);
+    EXPECT_EQ(client.Read(0), oracle[0]);
 }
 
 TEST_F(OnionRingE2ETest, TenEvictionWindowsPreserveRewrittenBlocks) {

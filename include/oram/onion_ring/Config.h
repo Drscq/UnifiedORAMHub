@@ -12,7 +12,7 @@ struct RuntimeConfig {
     size_t tree_height = 10;
     size_t num_blocks = 1024;
     size_t block_size = 256;
-    bool use_recursive_packed_swap_bits = false;
+    bool use_recursive_packed_swap_bits = true;
 
     int32_t tlwe_n = 1024;
     int32_t tlwe_k = 1;
@@ -26,8 +26,8 @@ struct RuntimeConfig {
     int32_t practical_tgsw_l = 3;
     int32_t practical_tgsw_bgbit = 7;
     int32_t rlwe_ks_basebit = 3;
-    int32_t rlwe_ks_length = 10;
-    double alpha = 1e-12;
+    int32_t rlwe_ks_length = 20;
+    double alpha = 1e-15;
 
     size_t BucketSlots() const { return z + s; }
     size_t NumTreeNodes() const { return (1ULL << (tree_height + 1)) - 1; }
