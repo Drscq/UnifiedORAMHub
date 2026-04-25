@@ -1,0 +1,6 @@
+Running main() from /home/changqi/research/UnifiedORAMHub/worktrees/onion-ring-oram/build/_deps/googletest-src/googletest/src/gtest_main.cc
+Note: Google Test filter = OnionRingE2ETest.DISABLED_PaperCryptoAmortizedDelayFourLevelTree
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from OnionRingE2ETest
+[ RUN      ] OnionRingE2ETest.DISABLED_PaperCryptoAmortizedDelayFourLevelTree
