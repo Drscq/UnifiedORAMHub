@@ -2,11 +2,15 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
+#include <iomanip>
+#include <iostream>
 #include <thread>
 #include <vector>
 
 #include "oram/onion_ring/OnionRingClient.h"
 #include "oram/onion_ring/OnionRingServer.h"
+#include "oram/onion_ring/WaksmanNetwork.h"
 
 namespace oram::onion_ring {
 namespace {
@@ -57,6 +61,27 @@ RuntimeConfig RecursiveCutoverSmokeConfig() {
     cfg.tree_height = 1;
     cfg.num_blocks = 2;
     cfg.block_size = 8;
+    return cfg;
+}
+
+RuntimeConfig PaperCryptoAmortizedConfig() {
+    RuntimeConfig cfg;
+    cfg.z = 254;
+    cfg.s = 254;
+    cfg.a = 249;
+    cfg.tree_height = 4;
+    cfg.num_blocks = 1024;
+    cfg.block_size = 3072;
+    cfg.use_recursive_packed_swap_bits = true;
+    cfg.recursive_tlwe_n = 2048;
+    cfg.swap_tgsw_l = 8;
+    cfg.swap_tgsw_bgbit = 3;
+    cfg.neg_sk_tgsw_l = 7;
+    cfg.neg_sk_tgsw_bgbit = 7;
+    cfg.rlwe_ks_basebit = 5;
+    cfg.rlwe_ks_length = 10;
+    cfg.plaintext_bits = 12;
+    cfg.alpha = std::ldexp(1.0, -55);
     return cfg;
 }
 
@@ -262,6 +287,65 @@ TEST_F(OnionRingE2ETest, RecursiveDefaultPackedSwapBitsSurviveMinimalEviction) {
 
     EXPECT_EQ(client.Read(1), oracle[1]);
     EXPECT_EQ(client.Read(0), oracle[0]);
+}
+
+TEST_F(OnionRingE2ETest, DISABLED_PaperCryptoAmortizedDelayFourLevelTree) {
+    RuntimeConfig config = PaperCryptoAmortizedConfig();
+    const size_t total_accesses = config.a * 10;
+    const size_t scheduled_evictions = total_accesses / config.a;
+    const WaksmanNetwork network(config.BucketSlots());
+    const size_t recursive_chunks =
+        (network.NumGates() + static_cast<size_t>(config.recursive_tlwe_n) - 1) /
+        static_cast<size_t>(config.recursive_tlwe_n);
+    const size_t recursive_rlwe_ciphertexts_per_permutation =
+        recursive_chunks * static_cast<size_t>(config.swap_tgsw_l);
+
+    std::cout << "\n[paper-crypto-amortized-config]\n"
+              << "tree_height=" << config.tree_height << "\n"
+              << "bucket_slots=" << config.BucketSlots() << "\n"
+              << "accesses=" << total_accesses << "\n"
+              << "scheduled_evictions=" << scheduled_evictions << "\n"
+              << "block_size=" << config.block_size << "\n"
+              << "plaintext_bits=" << config.plaintext_bits << "\n"
+              << "waksman_gates_per_permutation=" << network.NumGates() << "\n"
+              << "recursive_rlwe_ciphertexts_per_permutation="
+              << recursive_rlwe_ciphertexts_per_permutation << "\n";
+
+    const auto setup_start = std::chrono::steady_clock::now();
+    StartServer(config);
+    OnionRingClient client("127.0.0.1", port_, config_);
+    const auto setup_end = std::chrono::steady_clock::now();
+
+    std::vector<std::vector<uint8_t>> oracle(config.num_blocks,
+                                             std::vector<uint8_t>(config.block_size, 0));
+    const auto access_start = std::chrono::steady_clock::now();
+    for (size_t round = 0; round < total_accesses; ++round) {
+        const uint64_t addr = (round * 131 + 17) % config.num_blocks;
+        if (round % 2 == 0 || round % 17 == 0) {
+            oracle[addr] =
+                MakeBlock(config.block_size, static_cast<uint8_t>((round * 29 + addr) & 0xFF));
+            client.Write(addr, oracle[addr]);
+        } else {
+            ASSERT_EQ(client.Read(addr), oracle[addr]) << "round=" << round << " addr=" << addr;
+        }
+    }
+    const auto access_end = std::chrono::steady_clock::now();
+
+    const double setup_seconds =
+        std::chrono::duration<double>(setup_end - setup_start).count();
+    const double total_seconds =
+        std::chrono::duration<double>(access_end - access_start).count();
+    const double average_seconds = total_seconds / static_cast<double>(total_accesses);
+    const double amortized_eviction_window_seconds =
+        total_seconds / static_cast<double>(scheduled_evictions);
+
+    std::cout << std::fixed << std::setprecision(6)
+              << "\n[paper-crypto-amortized-results]\n"
+              << "setup_seconds=" << setup_seconds << "\n"
+              << "total_access_seconds=" << total_seconds << "\n"
+              << "average_access_seconds=" << average_seconds << "\n"
+              << "average_access_ms=" << average_seconds * 1000.0 << "\n"
+              << "amortized_eviction_window_seconds=" << amortized_eviction_window_seconds << "\n";
 }
 
 TEST_F(OnionRingE2ETest, TenEvictionWindowsPreserveRewrittenBlocks) {

@@ -16,9 +16,17 @@ namespace oram::onion_ring {
 
 namespace {
 
+int PlaintextModulus(int32_t plaintext_bits) {
+    if (plaintext_bits <= 0 || plaintext_bits > 30) {
+        throw std::invalid_argument("Plaintext precision must be in the range [1, 30] bits");
+    }
+    return 1 << plaintext_bits;
+}
+
 TLweParams* CreateTLweParams(const RuntimeConfig& config) {
     const int32_t n = config.use_recursive_packed_swap_bits ? config.recursive_tlwe_n : config.tlwe_n;
-    return new_TLweParams(n, config.tlwe_k, config.alpha, 1.0 / 16.0);
+    return new_TLweParams(n, config.tlwe_k, config.alpha,
+                          1.0 / static_cast<double>(PlaintextModulus(config.plaintext_bits)));
 }
 
 TGswParams* CreateTGswParams(int32_t l, int32_t bgbit, const TLweParams* tlwe_params) {
@@ -86,31 +94,54 @@ void ValidateExpansionMetadata(const ExpansionBundle& bundle, const RuntimeConfi
     }
 }
 
-TorusPolynomial* EncodeBlock(const std::vector<uint8_t>& block, const TLweParams* params) {
-    if (block.size() * 2 > static_cast<size_t>(params->N)) {
-        throw std::invalid_argument("Block size exceeds nibble-packed TLWE polynomial capacity");
+TorusPolynomial* EncodeBlock(const std::vector<uint8_t>& block, const TLweParams* params,
+                             int32_t plaintext_bits) {
+    const size_t capacity_bytes =
+        (static_cast<size_t>(params->N) * static_cast<size_t>(plaintext_bits)) / 8;
+    if (block.size() > capacity_bytes) {
+        throw std::invalid_argument("Block size exceeds TLWE polynomial plaintext capacity");
     }
 
     TorusPolynomial* poly = new_TorusPolynomial(params->N);
-    for (size_t i = 0; i < block.size(); ++i) {
-        const uint8_t low_nibble = static_cast<uint8_t>(block[i] & 0x0F);
-        const uint8_t high_nibble = static_cast<uint8_t>((block[i] >> 4U) & 0x0F);
-        poly->coefsT[2 * i] = modSwitchToTorus32(low_nibble, 16);
-        poly->coefsT[2 * i + 1] = modSwitchToTorus32(high_nibble, 16);
-    }
-    for (int i = static_cast<int>(block.size() * 2); i < params->N; ++i) {
-        poly->coefsT[i] = 0;
+    const int plaintext_modulus = PlaintextModulus(plaintext_bits);
+    for (int coeff = 0; coeff < params->N; ++coeff) {
+        int symbol = 0;
+        const size_t symbol_offset = static_cast<size_t>(coeff) * static_cast<size_t>(plaintext_bits);
+        for (int32_t bit = 0; bit < plaintext_bits; ++bit) {
+            const size_t bit_offset = symbol_offset + static_cast<size_t>(bit);
+            const size_t byte_index = bit_offset / 8;
+            if (byte_index >= block.size()) {
+                break;
+            }
+            const int byte_bit = static_cast<int>(bit_offset % 8);
+            if ((block[byte_index] & static_cast<uint8_t>(1U << byte_bit)) != 0) {
+                symbol |= 1 << bit;
+            }
+        }
+        poly->coefsT[coeff] = modSwitchToTorus32(symbol, plaintext_modulus);
     }
     return poly;
 }
 
-std::vector<uint8_t> DecodeBlock(const TorusPolynomial* poly, size_t block_size) {
+std::vector<uint8_t> DecodeBlock(const TorusPolynomial* poly, size_t block_size,
+                                 int32_t plaintext_bits) {
     std::vector<uint8_t> block(block_size, 0);
-    for (size_t i = 0; i < block_size; ++i) {
-        const uint8_t low_nibble = static_cast<uint8_t>(modSwitchFromTorus32(poly->coefsT[2 * i], 16));
-        const uint8_t high_nibble =
-            static_cast<uint8_t>(modSwitchFromTorus32(poly->coefsT[2 * i + 1], 16));
-        block[i] = static_cast<uint8_t>((high_nibble << 4U) | low_nibble);
+    const int plaintext_modulus = PlaintextModulus(plaintext_bits);
+    for (int coeff = 0; coeff < poly->N; ++coeff) {
+        const int symbol = modSwitchFromTorus32(poly->coefsT[coeff], plaintext_modulus);
+        const size_t symbol_offset = static_cast<size_t>(coeff) * static_cast<size_t>(plaintext_bits);
+        for (int32_t bit = 0; bit < plaintext_bits; ++bit) {
+            if ((symbol & (1 << bit)) == 0) {
+                continue;
+            }
+            const size_t bit_offset = symbol_offset + static_cast<size_t>(bit);
+            const size_t byte_index = bit_offset / 8;
+            if (byte_index >= block_size) {
+                break;
+            }
+            const int byte_bit = static_cast<int>(bit_offset % 8);
+            block[byte_index] |= static_cast<uint8_t>(1U << byte_bit);
+        }
     }
     return block;
 }
@@ -494,6 +525,7 @@ TFHEContext::TFHEContext(TFHEContext&& other) noexcept
       tgsw_key(std::exchange(other.tgsw_key, nullptr)),
       rlwe_ks_basebit(other.rlwe_ks_basebit),
       rlwe_ks_length(other.rlwe_ks_length),
+      plaintext_bits(other.plaintext_bits),
       alpha(other.alpha) {}
 
 TFHEContext& TFHEContext::operator=(TFHEContext&& other) noexcept {
@@ -511,6 +543,7 @@ TFHEContext& TFHEContext::operator=(TFHEContext&& other) noexcept {
         tgsw_key = std::exchange(other.tgsw_key, nullptr);
         rlwe_ks_basebit = other.rlwe_ks_basebit;
         rlwe_ks_length = other.rlwe_ks_length;
+        plaintext_bits = other.plaintext_bits;
         alpha = other.alpha;
     }
     return *this;
@@ -521,6 +554,7 @@ TFHEContext TFHEContext::CreateClientContext(const RuntimeConfig& config) {
     ctx.alpha = config.alpha;
     ctx.rlwe_ks_basebit = config.rlwe_ks_basebit;
     ctx.rlwe_ks_length = config.rlwe_ks_length;
+    ctx.plaintext_bits = config.plaintext_bits;
     ctx.tlwe_params = CreateTLweParams(config);
     ctx.swap_tgsw_params =
         CreateTGswParams(config.swap_tgsw_l, config.swap_tgsw_bgbit, ctx.tlwe_params);
@@ -548,6 +582,7 @@ TFHEContext TFHEContext::CreateServerContext(const RuntimeConfig& config) {
     ctx.alpha = config.alpha;
     ctx.rlwe_ks_basebit = config.rlwe_ks_basebit;
     ctx.rlwe_ks_length = config.rlwe_ks_length;
+    ctx.plaintext_bits = config.plaintext_bits;
     ctx.tlwe_params = CreateTLweParams(config);
     ctx.swap_tgsw_params =
         CreateTGswParams(config.swap_tgsw_l, config.swap_tgsw_bgbit, ctx.tlwe_params);
@@ -593,6 +628,7 @@ void TFHEContext::Reset() {
     }
     rlwe_ks_basebit = 0;
     rlwe_ks_length = 0;
+    plaintext_bits = 0;
 }
 
 ExpansionBundle BuildExpansionBundle(const TFHEContext& ctx) {
@@ -655,7 +691,7 @@ RGSWCiphertext EncryptNegatedSecretKey(const TFHEContext& ctx) {
 RLWECiphertext EncryptBlock(const std::vector<uint8_t>& block, const TFHEContext& ctx) {
     CheckClientTlweKey(ctx);
     RLWECiphertext ciphertext(ctx.tlwe_params);
-    TorusPolynomial* poly = EncodeBlock(block, ctx.tlwe_params);
+    TorusPolynomial* poly = EncodeBlock(block, ctx.tlwe_params, ctx.plaintext_bits);
     tLweSymEncrypt(ciphertext.Get(), poly, ctx.alpha, ctx.tlwe_key);
     delete_TorusPolynomial(poly);
     return ciphertext;
@@ -664,13 +700,15 @@ RLWECiphertext EncryptBlock(const std::vector<uint8_t>& block, const TFHEContext
 std::vector<uint8_t> DecryptBlock(const RLWECiphertext& ciphertext, const TFHEContext& ctx,
                                   size_t block_size) {
     CheckClientTlweKey(ctx);
-    if (block_size * 2 > static_cast<size_t>(ctx.tlwe_params->N)) {
-        throw std::invalid_argument("Requested block size exceeds nibble-packed TLWE polynomial capacity");
+    const size_t capacity_bytes =
+        (static_cast<size_t>(ctx.tlwe_params->N) * static_cast<size_t>(ctx.plaintext_bits)) / 8;
+    if (block_size > capacity_bytes) {
+        throw std::invalid_argument("Requested block size exceeds TLWE polynomial plaintext capacity");
     }
 
     TorusPolynomial* poly = new_TorusPolynomial(ctx.tlwe_params->N);
-    tLweSymDecrypt(poly, ciphertext.Get(), ctx.tlwe_key, 16);
-    std::vector<uint8_t> block = DecodeBlock(poly, block_size);
+    tLweSymDecrypt(poly, ciphertext.Get(), ctx.tlwe_key, PlaintextModulus(ctx.plaintext_bits));
+    std::vector<uint8_t> block = DecodeBlock(poly, block_size, ctx.plaintext_bits);
     delete_TorusPolynomial(poly);
     return block;
 }

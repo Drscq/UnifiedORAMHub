@@ -27,6 +27,7 @@ struct RuntimeConfig {
     int32_t practical_tgsw_bgbit = 7;
     int32_t rlwe_ks_basebit = 3;
     int32_t rlwe_ks_length = 20;
+    int32_t plaintext_bits = 4;
     double alpha = 1e-15;
 
     size_t BucketSlots() const { return z + s; }

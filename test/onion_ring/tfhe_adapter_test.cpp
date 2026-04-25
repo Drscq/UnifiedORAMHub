@@ -50,6 +50,23 @@ TEST(TFHEAdapterTest, TlweRoundTripBlockPayload) {
     EXPECT_EQ(out, message);
 }
 
+TEST(TFHEAdapterTest, TlweRoundTripUsesConfiguredTwelveBitPlaintextPacking) {
+    RuntimeConfig cfg;
+    cfg.plaintext_bits = 12;
+    cfg.block_size = static_cast<size_t>(cfg.recursive_tlwe_n) *
+                     static_cast<size_t>(cfg.plaintext_bits) / 8;
+    auto ctx = TFHEContext::CreateClientContext(cfg);
+    std::vector<uint8_t> message(cfg.block_size, 0);
+    for (size_t i = 0; i < message.size(); ++i) {
+        message[i] = static_cast<uint8_t>((i * 37 + 0x5A) & 0xFF);
+    }
+
+    auto ct = EncryptBlock(message, ctx);
+    auto out = DecryptBlock(ct, ctx, cfg.block_size);
+
+    EXPECT_EQ(out, message);
+}
+
 TEST(TFHEAdapterTest, TlweSerializationRoundTrip) {
     RuntimeConfig cfg;
     auto ctx = TFHEContext::CreateClientContext(cfg);

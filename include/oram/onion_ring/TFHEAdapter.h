@@ -126,6 +126,7 @@ struct TFHEContext {
     TGswKey* tgsw_key = nullptr;
     int32_t rlwe_ks_basebit = 0;
     int32_t rlwe_ks_length = 0;
+    int32_t plaintext_bits = 0;
     double alpha = 0.0;
 
     TFHEContext() = default;
