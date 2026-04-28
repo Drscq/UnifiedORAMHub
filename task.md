@@ -10,3 +10,15 @@
 - [x] Task 8: Implement leaf refresh and complete the protocol
 - [x] Task 9: Run full verification
 - [x] Task 10: Prepare the optimization follow-up
+
+# Ring ORAM Task Tracker
+
+- [x] Brainstorming 1: Explore project context
+- [x] Brainstorming 2: Ask clarifying questions
+- [x] Brainstorming 3: Propose implementation approaches
+- [x] Brainstorming 4: Present design and get approval
+- [x] Brainstorming 5: Write design doc
+- [x] Planning 1: Write implementation plan
+- [x] Implementation 1: Add failing tests
+- [x] Implementation 2: Implement Ring ORAM module
+- [x] Implementation 3: Run verification

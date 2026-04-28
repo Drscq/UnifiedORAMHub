@@ -86,6 +86,9 @@ add_library(oram_core
     src/crypto/AES_CTR.cpp
     src/path_oram/PathORAMServer.cpp
     src/path_oram/PathORAMClient.cpp
+    src/ring_oram/RingBucket.cpp
+    src/ring_oram/RingORAMServer.cpp
+    src/ring_oram/RingORAMClient.cpp
 )
 
 target_include_directories(oram_core PUBLIC

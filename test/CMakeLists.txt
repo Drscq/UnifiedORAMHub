@@ -41,3 +41,15 @@ target_link_libraries(onion_ring_tests PRIVATE
 )
 
 gtest_discover_tests(onion_ring_tests)
+
+add_executable(ring_oram_tests
+    ring_oram/ring_oram_test.cpp
+)
+target_link_libraries(ring_oram_tests PRIVATE
+    oram_core
+    GTest::gtest
+    GTest::gmock
+    GTest::gtest_main
+)
+
+gtest_discover_tests(ring_oram_tests)
