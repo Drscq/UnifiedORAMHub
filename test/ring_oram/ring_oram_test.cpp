@@ -125,5 +125,66 @@ TEST(RingORAMClientTest, EarlyReshuffleResetsTouchedBucket) {
     }
 }
 
+TEST(RingORAMClientTest, ReadPathUsesOneServerXorAggregate) {
+    RuntimeConfig cfg = SmallConfig();
+    cfg.a = 64;
+
+    RingORAMServer server(cfg, 0xC005);
+    RingORAMClient client(server, cfg, 0xBEEF);
+
+    const auto expected = MakeBlock(cfg.block_size, 0x31);
+    client.Write(2, expected);
+    const uint64_t xor_reads_after_write = server.XorPathReadCount();
+
+    EXPECT_EQ(client.Read(2), expected);
+
+    EXPECT_EQ(server.XorPathReadCount(), xor_reads_after_write + 1);
+    EXPECT_EQ(server.LastXorPathSlotCount(), cfg.tree_depth + 1);
+    EXPECT_EQ(client.ReadPathCount(), 2U);
+}
+
+TEST(RingORAMClientTest, TenEvictionFrequenciesKeepReadPathEarlyReshuffleAndEvictionTogether) {
+    RuntimeConfig cfg = SmallConfig();
+    cfg.num_blocks = 12;
+    cfg.tree_depth = 4;
+    cfg.z = 4;
+    cfg.s = 2;
+    cfg.a = 3;
+    cfg.block_size = 20;
+
+    RingORAMServer server(cfg, 0xC006);
+    RingORAMClient client(server, cfg, 0xBEEF);
+
+    std::vector<std::vector<uint8_t>> oracle(cfg.num_blocks,
+                                             std::vector<uint8_t>(cfg.block_size, 0));
+    for (size_t addr = 0; addr < cfg.num_blocks; ++addr) {
+        oracle[addr] = MakeBlock(cfg.block_size, static_cast<uint8_t>(0x20 + addr * 3));
+        client.Write(static_cast<uint64_t>(addr), oracle[addr]);
+    }
+
+    const size_t start_read_paths = client.ReadPathCount();
+    const uint64_t start_evictions = client.EvictionCounter();
+    const size_t total_accesses = 10 * cfg.a;
+
+    for (size_t i = 0; i < total_accesses; ++i) {
+        const uint64_t addr = static_cast<uint64_t>((i * 7 + 1) % cfg.num_blocks);
+        if (i % 4 == 0) {
+            oracle[addr] = MakeBlock(cfg.block_size, static_cast<uint8_t>(0xA0 + i));
+            client.Write(addr, oracle[addr]);
+        } else {
+            EXPECT_EQ(client.Read(addr), oracle[addr]) << "round=" << i << " addr=" << addr;
+        }
+    }
+
+    for (size_t addr = 0; addr < cfg.num_blocks; ++addr) {
+        EXPECT_EQ(client.Read(static_cast<uint64_t>(addr)), oracle[addr]) << "addr=" << addr;
+    }
+
+    EXPECT_GE(client.ReadPathCount(), start_read_paths + total_accesses);
+    EXPECT_GE(client.EvictionCounter(), start_evictions + 10);
+    EXPECT_GT(client.EarlyReshuffleCount(), 0U);
+    EXPECT_GE(server.XorPathReadCount(), client.ReadPathCount());
+}
+
 }  // namespace
 }  // namespace oram::ring_oram

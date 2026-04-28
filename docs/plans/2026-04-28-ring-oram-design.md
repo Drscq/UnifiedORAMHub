@@ -22,7 +22,9 @@ The first implementation is an in-process client/server split. `RingORAMServer` 
 
 ## Data Flow
 
-`Access(a, op, data')` remaps `a` to a fresh leaf, reads one slot from each bucket on the old path, removes the block from the stash if it was already local, applies writes, and adds the remapped block to the stash. Every `A` accesses it evicts along the next leaf path. It then early-reshuffles touched buckets whose touch counter reached `S`.
+`Access(a, op, data')` remaps `a` to a fresh leaf, selects one slot from each bucket on the old path, asks the server to XOR those selected payloads into one aggregate block, removes the block from the stash if it was already local, applies writes, and adds the remapped block to the stash. Every `A` accesses it evicts along the next leaf path. It then early-reshuffles touched buckets whose touch counter reached `S`.
+
+The simulated server supports the XOR technique for online bandwidth: `ReadPath` calls one aggregate server operation over the `L + 1` selected slots. The client tracks the selected dummy payloads locally and XORs those masks away from the aggregate result. If the target block was not selected on the path, the aggregate unmasks to only dummy material and the client falls back to the stash.
 
 `WriteBucket` greedily places up to `Z` eligible stash blocks into a bucket, pads every remaining slot with dummies, samples fresh slot offsets, marks all slots valid, and resets the bucket counter. `ReadBucket` removes all valid real blocks into the stash and pads the logical read count to `Z` by invalidating random valid dummy slots.
 
@@ -32,6 +34,8 @@ Tests will cover the user-visible RAM behavior and protocol-specific metadata:
 
 - bucket shape matches `Z + S`, `Z`, and valid-bit requirements,
 - write/read/overwrite correctness,
+- XOR read-path aggregation with one server response per path,
 - periodic eviction preserves data across many accesses,
 - early reshuffle resets a hot bucket count,
+- a 10x eviction-frequency mixed access test covers `ReadPath`, `EarlyReshuffle`, and `EvictPath` together,
 - reverse-style deterministic eviction path helper covers leaves through the persistent counter baseline.

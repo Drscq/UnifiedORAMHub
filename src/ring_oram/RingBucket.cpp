@@ -22,6 +22,19 @@ RingBlock NormalizeBlock(RingBlock block, size_t block_size) {
     return block;
 }
 
+RingBlock MakeDummyBlock(size_t block_size, std::mt19937_64* prng) {
+    RingBlock block = RingBlock::Dummy(block_size);
+    if (prng == nullptr) {
+        return block;
+    }
+
+    std::uniform_int_distribution<int> byte_dist(0, 255);
+    for (auto& byte : block.data) {
+        byte = static_cast<uint8_t>(byte_dist(*prng));
+    }
+    return block;
+}
+
 }  // namespace
 
 RingBlock RingBlock::Dummy(size_t block_size) {
@@ -59,7 +72,11 @@ void RingBucket::ResetWithBlocks(const std::vector<RingBlock>& blocks, std::mt19
     std::fill(valids.begin(), valids.end(), true);
     std::fill(addrs.begin(), addrs.end(), kDummyAddress);
     std::fill(leaves.begin(), leaves.end(), 0);
-    data.assign(SlotCount(), RingBlock::Dummy(block_size_));
+    data.clear();
+    data.reserve(SlotCount());
+    for (size_t i = 0; i < SlotCount(); ++i) {
+        data.push_back(MakeDummyBlock(block_size_, prng));
+    }
 
     const auto permutation = MakePermutation(SlotCount(), prng);
     for (size_t i = 0; i < ptrs.size(); ++i) {

@@ -22,3 +22,6 @@
 - [x] Implementation 1: Add failing tests
 - [x] Implementation 2: Implement Ring ORAM module
 - [x] Implementation 3: Run verification
+- [x] XOR ReadPath 1: Add failing aggregate-read and 10x eviction-frequency tests
+- [x] XOR ReadPath 2: Implement server-side path XOR and client dummy unmasking
+- [x] XOR ReadPath 3: Run verification

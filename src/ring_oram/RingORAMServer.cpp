@@ -54,6 +54,33 @@ const RingBucket& RingORAMServer::GetBucket(size_t bucket_idx) const {
     return tree_[bucket_idx];
 }
 
+std::vector<uint8_t> RingORAMServer::XorPathSlots(uint64_t leaf,
+                                                  const std::vector<size_t>& offsets) {
+    const auto path = GetPathIndices(leaf);
+    if (offsets.size() != path.size()) {
+        throw std::invalid_argument("Ring ORAM XOR path selection size mismatch");
+    }
+
+    std::vector<uint8_t> aggregate(config_.block_size, 0);
+    for (size_t i = 0; i < path.size(); ++i) {
+        const RingBucket& bucket = GetBucket(path[i]);
+        const size_t offset = offsets[i];
+        if (offset >= bucket.data.size()) {
+            throw std::out_of_range("Ring ORAM XOR path slot out of range");
+        }
+        if (bucket.data[offset].data.size() != config_.block_size) {
+            throw std::runtime_error("Ring ORAM XOR path block size mismatch");
+        }
+        for (size_t byte = 0; byte < aggregate.size(); ++byte) {
+            aggregate[byte] ^= bucket.data[offset].data[byte];
+        }
+    }
+
+    ++xor_path_read_count_;
+    last_xor_path_slot_count_ = offsets.size();
+    return aggregate;
+}
+
 std::vector<size_t> RingORAMServer::GetPathIndices(uint64_t leaf) const {
     if (leaf >= config_.NumLeaves()) {
         throw std::out_of_range("Ring ORAM leaf index out of range");

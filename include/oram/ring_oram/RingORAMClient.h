@@ -38,10 +38,15 @@ class RingORAMClient : public core::RAM {
     const std::vector<RingBlock>& Stash() const { return stash_; }
     size_t Round() const { return round_; }
     uint64_t EvictionCounter() const { return eviction_counter_; }
+    size_t ReadPathCount() const { return read_path_count_; }
+    size_t EarlyReshuffleCount() const { return early_reshuffle_count_; }
 
    private:
     uint64_t GetRandomLeaf();
     void ValidateAddress(uint64_t addr) const;
+    std::vector<uint8_t> XorBuffers(const std::vector<uint8_t>& lhs,
+                                    const std::vector<uint8_t>& rhs) const;
+    void XorInto(std::vector<uint8_t>* target, const std::vector<uint8_t>& source) const;
     void PutBlockInStash(const RingBlock& block);
     std::optional<RingBlock> TakeBlockFromStash(uint64_t addr);
     void RemoveBlockFromStash(uint64_t addr);
@@ -54,6 +59,8 @@ class RingORAMClient : public core::RAM {
     std::vector<RingBlock> stash_;
     size_t round_ = 0;
     uint64_t eviction_counter_ = 0;
+    size_t read_path_count_ = 0;
+    size_t early_reshuffle_count_ = 0;
     std::mt19937_64 prng_;
 };
 

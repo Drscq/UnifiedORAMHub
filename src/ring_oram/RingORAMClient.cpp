@@ -80,7 +80,10 @@ void RingORAMClient::Write(uint64_t addr, const std::vector<uint8_t>& data) {
 
 std::optional<std::vector<uint8_t>> RingORAMClient::ReadPath(uint64_t leaf, uint64_t addr) {
     auto path = server_.GetPathIndices(leaf);
-    std::optional<std::vector<uint8_t>> result;
+    std::vector<size_t> offsets;
+    offsets.reserve(path.size());
+    std::vector<uint8_t> dummy_mask(config_.block_size, 0);
+    bool found_on_path = false;
 
     for (size_t bucket_idx : path) {
         RingBucket& bucket = server_.GetBucket(bucket_idx);
@@ -89,15 +92,31 @@ std::optional<std::vector<uint8_t>> RingORAMClient::ReadPath(uint64_t leaf, uint
             throw std::out_of_range("Ring ORAM selected slot out of range");
         }
 
-        RingBlock& selected = bucket.data[offset];
-        if (bucket.valids[offset] && !selected.IsDummy() && selected.addr == addr) {
-            result = selected.data;
+        const RingBlock& selected = bucket.data[offset];
+        const bool selected_target = bucket.valids[offset] && !selected.IsDummy() &&
+                                     selected.addr == addr;
+        if (selected_target) {
+            found_on_path = true;
+        } else {
+            XorInto(&dummy_mask, selected.data);
         }
+        offsets.push_back(offset);
+    }
+
+    const auto aggregate = server_.XorPathSlots(leaf, offsets);
+
+    for (size_t i = 0; i < path.size(); ++i) {
+        RingBucket& bucket = server_.GetBucket(path[i]);
+        const size_t offset = offsets[i];
         bucket.valids[offset] = false;
         ++bucket.count;
     }
 
-    return result;
+    ++read_path_count_;
+    if (!found_on_path) {
+        return std::nullopt;
+    }
+    return XorBuffers(aggregate, dummy_mask);
 }
 
 void RingORAMClient::EvictPath() {
@@ -124,6 +143,7 @@ void RingORAMClient::EarlyReshuffle(uint64_t leaf) {
             ReadBucket(bucket);
             WriteBucket(bucket_idx, bucket);
             bucket.count = 0;
+            ++early_reshuffle_count_;
         }
     }
 }
@@ -195,6 +215,30 @@ void RingORAMClient::WriteBucket(size_t bucket_idx, RingBucket& bucket) {
 
 bool RingORAMClient::CanResideInBucket(uint64_t block_leaf, size_t bucket_idx) const {
     return server_.IsBucketOnLeafPath(bucket_idx, block_leaf);
+}
+
+std::vector<uint8_t> RingORAMClient::XorBuffers(const std::vector<uint8_t>& lhs,
+                                                const std::vector<uint8_t>& rhs) const {
+    if (lhs.size() != rhs.size()) {
+        throw std::invalid_argument("Ring ORAM XOR buffer size mismatch");
+    }
+
+    std::vector<uint8_t> result(lhs.size(), 0);
+    for (size_t i = 0; i < lhs.size(); ++i) {
+        result[i] = lhs[i] ^ rhs[i];
+    }
+    return result;
+}
+
+void RingORAMClient::XorInto(std::vector<uint8_t>* target,
+                             const std::vector<uint8_t>& source) const {
+    if (target == nullptr || target->size() != source.size()) {
+        throw std::invalid_argument("Ring ORAM XOR target size mismatch");
+    }
+
+    for (size_t i = 0; i < source.size(); ++i) {
+        (*target)[i] ^= source[i];
+    }
 }
 
 void RingORAMClient::PutBlockInStash(const RingBlock& block) {
