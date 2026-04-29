@@ -2,9 +2,12 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <random>
+#include <string>
 #include <vector>
 
+#include "oram/network/NetIO.h"
 #include "oram/ring_oram/Config.h"
 #include "oram/ring_oram/RingBucket.h"
 
@@ -12,18 +15,15 @@ namespace oram::ring_oram {
 
 class RingORAMServer {
    public:
-    explicit RingORAMServer(const RuntimeConfig& config, uint64_t seed = 0x52696E67ULL);
+    RingORAMServer(const std::string& address, int port, const RuntimeConfig& config);
+    ~RingORAMServer();
 
-    void Init();
+    void HandleRequests();
+    void Stop();
 
     const RuntimeConfig& Config() const { return config_; }
     size_t NumNodes() const { return tree_.size(); }
     size_t NumLeaves() const { return config_.NumLeaves(); }
-
-    RingBucket& GetBucket(size_t bucket_idx);
-    const RingBucket& GetBucket(size_t bucket_idx) const;
-
-    std::vector<uint8_t> XorPathSlots(uint64_t leaf, const std::vector<size_t>& offsets);
 
     std::vector<size_t> GetPathIndices(uint64_t leaf) const;
     size_t GetBucketIndex(uint64_t leaf, size_t level) const;
@@ -35,10 +35,22 @@ class RingORAMServer {
 
    private:
     void ValidateConfig() const;
+    void ValidateInitialized() const;
+    const EncryptedRingBucket& GetBucket(size_t bucket_idx) const;
+    EncryptedRingBucket& GetBucket(size_t bucket_idx);
+
+    void HandleInit();
+    void HandleReadPathMetadata();
+    void HandleXorPathSlots();
+    void HandleReadBucket();
+    void HandleWriteBucket();
+    void HandleReadBucketCount();
+    void HandleReadStats();
 
     RuntimeConfig config_;
-    std::vector<RingBucket> tree_;
-    std::mt19937_64 prng_;
+    std::vector<EncryptedRingBucket> tree_;
+    std::unique_ptr<network::NetIO> net_io_;
+    bool running_ = false;
     uint64_t xor_path_read_count_ = 0;
     size_t last_xor_path_slot_count_ = 0;
 };

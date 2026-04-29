@@ -4,11 +4,42 @@
 
 namespace oram::ring_oram {
 
-RingORAMServer::RingORAMServer(const RuntimeConfig& config, uint64_t seed)
-    : config_(config), prng_(seed) {
-    ValidateConfig();
-    Init();
+namespace {
+
+void SendAck(network::NetIO* net_io) {
+    char ack = 'K';
+    net_io->SendData(&ack, sizeof(ack));
+    net_io->Flush();
 }
+
+void XorInto(std::vector<uint8_t>* target, const std::vector<uint8_t>& source) {
+    if (target == nullptr || target->size() != source.size()) {
+        throw std::invalid_argument("Ring ORAM server XOR size mismatch");
+    }
+    for (size_t i = 0; i < source.size(); ++i) {
+        (*target)[i] ^= source[i];
+    }
+}
+
+RingBucketMetadata MetadataFromBucket(const EncryptedRingBucket& bucket) {
+    RingBucketMetadata metadata;
+    metadata.count = bucket.count;
+    metadata.valids = bucket.valids;
+    metadata.addrs = bucket.addrs;
+    metadata.leaves = bucket.leaves;
+    metadata.ptrs = bucket.ptrs;
+    return metadata;
+}
+
+}  // namespace
+
+RingORAMServer::RingORAMServer(const std::string& address, int port, const RuntimeConfig& config)
+    : config_(config) {
+    ValidateConfig();
+    net_io_ = std::make_unique<network::NetIO>(address, port, true, true);
+}
+
+RingORAMServer::~RingORAMServer() { Stop(); }
 
 void RingORAMServer::ValidateConfig() const {
     if (config_.num_blocks == 0) {
@@ -31,54 +62,24 @@ void RingORAMServer::ValidateConfig() const {
     }
 }
 
-void RingORAMServer::Init() {
-    tree_.clear();
-    tree_.reserve(config_.NumTreeNodes());
-    for (size_t i = 0; i < config_.NumTreeNodes(); ++i) {
-        tree_.emplace_back(config_.z, config_.s, config_.block_size);
-        tree_.back().ResetWithBlocks({}, &prng_);
+void RingORAMServer::ValidateInitialized() const {
+    if (tree_.size() != config_.NumTreeNodes()) {
+        throw std::runtime_error("Ring ORAM server has not been initialized");
     }
 }
 
-RingBucket& RingORAMServer::GetBucket(size_t bucket_idx) {
+EncryptedRingBucket& RingORAMServer::GetBucket(size_t bucket_idx) {
     if (bucket_idx >= tree_.size()) {
         throw std::out_of_range("Ring ORAM bucket index out of range");
     }
     return tree_[bucket_idx];
 }
 
-const RingBucket& RingORAMServer::GetBucket(size_t bucket_idx) const {
+const EncryptedRingBucket& RingORAMServer::GetBucket(size_t bucket_idx) const {
     if (bucket_idx >= tree_.size()) {
         throw std::out_of_range("Ring ORAM bucket index out of range");
     }
     return tree_[bucket_idx];
-}
-
-std::vector<uint8_t> RingORAMServer::XorPathSlots(uint64_t leaf,
-                                                  const std::vector<size_t>& offsets) {
-    const auto path = GetPathIndices(leaf);
-    if (offsets.size() != path.size()) {
-        throw std::invalid_argument("Ring ORAM XOR path selection size mismatch");
-    }
-
-    std::vector<uint8_t> aggregate(config_.block_size, 0);
-    for (size_t i = 0; i < path.size(); ++i) {
-        const RingBucket& bucket = GetBucket(path[i]);
-        const size_t offset = offsets[i];
-        if (offset >= bucket.data.size()) {
-            throw std::out_of_range("Ring ORAM XOR path slot out of range");
-        }
-        if (bucket.data[offset].data.size() != config_.block_size) {
-            throw std::runtime_error("Ring ORAM XOR path block size mismatch");
-        }
-        for (size_t byte = 0; byte < aggregate.size(); ++byte) {
-            aggregate[byte] ^= bucket.data[offset].data[byte];
-        }
-    }
-
-    ++xor_path_read_count_;
-    last_xor_path_slot_count_ = offsets.size();
-    return aggregate;
 }
 
 std::vector<size_t> RingORAMServer::GetPathIndices(uint64_t leaf) const {
@@ -132,5 +133,173 @@ bool RingORAMServer::IsBucketOnLeafPath(size_t bucket_idx, uint64_t leaf) const 
     const size_t level = GetNodeLevel(bucket_idx);
     return GetBucketIndex(leaf, level) == bucket_idx;
 }
+
+void RingORAMServer::HandleInit() {
+    uint64_t node_count = 0;
+    net_io_->RecvData(&node_count, sizeof(node_count));
+    if (node_count != config_.NumTreeNodes()) {
+        throw std::invalid_argument("Ring ORAM init tree size mismatch");
+    }
+
+    tree_.clear();
+    tree_.reserve(node_count);
+    for (uint64_t i = 0; i < node_count; ++i) {
+        std::vector<uint8_t> bytes;
+        net_io_->RecvVec(bytes);
+        EncryptedRingBucket bucket = DeserializeEncryptedRingBucket(bytes);
+        if (bucket.valids.size() != config_.BucketSlots() || bucket.addrs.size() != config_.z ||
+            bucket.leaves.size() != config_.z || bucket.ptrs.size() != config_.z ||
+            bucket.data.size() != config_.BucketSlots()) {
+            throw std::invalid_argument("Ring ORAM init bucket shape mismatch");
+        }
+        tree_.push_back(std::move(bucket));
+    }
+    SendAck(net_io_.get());
+}
+
+void RingORAMServer::HandleReadPathMetadata() {
+    ValidateInitialized();
+    uint64_t leaf = 0;
+    net_io_->RecvData(&leaf, sizeof(leaf));
+
+    const auto path = GetPathIndices(leaf);
+    uint64_t path_size = path.size();
+    net_io_->SendData(&path_size, sizeof(path_size));
+    for (size_t bucket_idx : path) {
+        net_io_->SendVec(SerializeRingBucketMetadata(MetadataFromBucket(GetBucket(bucket_idx))));
+    }
+    net_io_->Flush();
+}
+
+void RingORAMServer::HandleXorPathSlots() {
+    ValidateInitialized();
+    uint64_t leaf = 0;
+    uint64_t offset_count = 0;
+    net_io_->RecvData(&leaf, sizeof(leaf));
+    net_io_->RecvData(&offset_count, sizeof(offset_count));
+
+    const auto path = GetPathIndices(leaf);
+    if (offset_count != path.size()) {
+        throw std::invalid_argument("Ring ORAM XOR path offset count mismatch");
+    }
+
+    std::vector<size_t> offsets;
+    offsets.reserve(offset_count);
+    for (uint64_t i = 0; i < offset_count; ++i) {
+        uint64_t offset = 0;
+        net_io_->RecvData(&offset, sizeof(offset));
+        offsets.push_back(static_cast<size_t>(offset));
+    }
+
+    std::vector<uint8_t> aggregate(config_.block_size, 0);
+    std::vector<std::vector<uint8_t>> selected_ivs;
+    selected_ivs.reserve(offsets.size());
+
+    for (size_t i = 0; i < path.size(); ++i) {
+        EncryptedRingBucket& bucket = GetBucket(path[i]);
+        const size_t offset = offsets[i];
+        if (offset >= bucket.data.size() || offset >= bucket.valids.size()) {
+            throw std::out_of_range("Ring ORAM XOR path slot out of range");
+        }
+        if (!bucket.valids[offset]) {
+            throw std::runtime_error("Ring ORAM XOR path selected an invalid slot");
+        }
+        if (bucket.data[offset].ciphertext.size() != config_.block_size) {
+            throw std::runtime_error("Ring ORAM XOR path block size mismatch");
+        }
+
+        XorInto(&aggregate, bucket.data[offset].ciphertext);
+        selected_ivs.push_back(bucket.data[offset].iv);
+        bucket.valids[offset] = false;
+        ++bucket.count;
+    }
+
+    ++xor_path_read_count_;
+    last_xor_path_slot_count_ = offsets.size();
+
+    net_io_->SendVec(aggregate);
+    uint64_t iv_count = selected_ivs.size();
+    net_io_->SendData(&iv_count, sizeof(iv_count));
+    for (const auto& iv : selected_ivs) {
+        net_io_->SendVec(iv);
+    }
+    net_io_->Flush();
+}
+
+void RingORAMServer::HandleReadBucket() {
+    ValidateInitialized();
+    uint64_t bucket_idx = 0;
+    net_io_->RecvData(&bucket_idx, sizeof(bucket_idx));
+    net_io_->SendVec(SerializeEncryptedRingBucket(GetBucket(bucket_idx)));
+    net_io_->Flush();
+}
+
+void RingORAMServer::HandleWriteBucket() {
+    ValidateInitialized();
+    uint64_t bucket_idx = 0;
+    net_io_->RecvData(&bucket_idx, sizeof(bucket_idx));
+
+    std::vector<uint8_t> bytes;
+    net_io_->RecvVec(bytes);
+    EncryptedRingBucket bucket = DeserializeEncryptedRingBucket(bytes);
+    if (bucket.valids.size() != config_.BucketSlots() || bucket.addrs.size() != config_.z ||
+        bucket.leaves.size() != config_.z || bucket.ptrs.size() != config_.z ||
+        bucket.data.size() != config_.BucketSlots()) {
+        throw std::invalid_argument("Ring ORAM write bucket shape mismatch");
+    }
+    GetBucket(bucket_idx) = std::move(bucket);
+    SendAck(net_io_.get());
+}
+
+void RingORAMServer::HandleReadBucketCount() {
+    ValidateInitialized();
+    uint64_t bucket_idx = 0;
+    net_io_->RecvData(&bucket_idx, sizeof(bucket_idx));
+    uint64_t count = GetBucket(bucket_idx).count;
+    net_io_->SendData(&count, sizeof(count));
+    net_io_->Flush();
+}
+
+void RingORAMServer::HandleReadStats() {
+    net_io_->SendData(&xor_path_read_count_, sizeof(xor_path_read_count_));
+    uint64_t last_slots = last_xor_path_slot_count_;
+    net_io_->SendData(&last_slots, sizeof(last_slots));
+    net_io_->Flush();
+}
+
+void RingORAMServer::HandleRequests() {
+    running_ = true;
+    while (running_) {
+        try {
+            char command = 0;
+            net_io_->RecvData(&command, 1);
+            if (command == 'Q') {
+                break;
+            }
+            if (command == 'I') {
+                HandleInit();
+            } else if (command == 'M') {
+                HandleReadPathMetadata();
+            } else if (command == 'X') {
+                HandleXorPathSlots();
+            } else if (command == 'B') {
+                HandleReadBucket();
+            } else if (command == 'W') {
+                HandleWriteBucket();
+            } else if (command == 'T') {
+                HandleReadBucketCount();
+            } else if (command == 'S') {
+                HandleReadStats();
+            } else {
+                throw std::runtime_error("Unknown Ring ORAM server command");
+            }
+        } catch (...) {
+            break;
+        }
+    }
+    running_ = false;
+}
+
+void RingORAMServer::Stop() { running_ = false; }
 
 }  // namespace oram::ring_oram

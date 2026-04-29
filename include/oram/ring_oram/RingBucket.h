@@ -20,6 +20,34 @@ struct RingBlock {
     static RingBlock Dummy(size_t block_size);
 };
 
+struct EncryptedField {
+    std::vector<uint8_t> iv;
+    std::vector<uint8_t> ciphertext;
+};
+
+struct EncryptedRingBucket {
+    size_t count = 0;
+    std::vector<bool> valids;
+    std::vector<EncryptedField> addrs;
+    std::vector<EncryptedField> leaves;
+    std::vector<EncryptedField> ptrs;
+    std::vector<EncryptedField> data;
+};
+
+struct RingBucketMetadata {
+    size_t count = 0;
+    std::vector<bool> valids;
+    std::vector<EncryptedField> addrs;
+    std::vector<EncryptedField> leaves;
+    std::vector<EncryptedField> ptrs;
+};
+
+std::vector<uint8_t> SerializeEncryptedRingBucket(const EncryptedRingBucket& bucket);
+EncryptedRingBucket DeserializeEncryptedRingBucket(const std::vector<uint8_t>& bytes);
+
+std::vector<uint8_t> SerializeRingBucketMetadata(const RingBucketMetadata& metadata);
+RingBucketMetadata DeserializeRingBucketMetadata(const std::vector<uint8_t>& bytes);
+
 class RingBucket {
    public:
     RingBucket();

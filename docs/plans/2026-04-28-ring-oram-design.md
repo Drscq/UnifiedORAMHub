@@ -10,23 +10,26 @@ Add a classic Ring ORAM implementation with separate client and server classes. 
 
 Ring ORAM will live in a new `oram::ring_oram` namespace rather than reusing `oram::onion_ring`, because Onion Ring ORAM in this repository is the TFHE-backed homomorphic prototype and has a different protocol shape.
 
-The first implementation is an in-process client/server split. `RingORAMServer` stores the tree and exposes bucket/path helpers. `RingORAMClient` implements `core::RAM` and performs `Access`, `ReadPath`, `EvictPath`, `EarlyReshuffle`, `GetBlockOffset`, `ReadBucket`, and `WriteBucket` directly against the server object. This keeps the protocol behavior testable without adding a second network protocol beside Path ORAM.
+The implementation must use a strict socket boundary. `RingORAMServer` owns only encrypted serialized bucket storage and a `NetIO` server connection. `RingORAMClient` owns the encryption key, position map, stash, local metadata decoding, and a `NetIO` client connection. The server must not share address space references with the client.
 
 ## Components
 
 - `RuntimeConfig`: user parameters `N`, `L`, `Z`, `S`, `A`, plus `block_size`.
 - `RingBlock`: address, mapped leaf, payload bytes, and a dummy sentinel.
 - `RingBucket`: public metadata fields matching the requested protocol: `count`, `valids`, `addrs`, `leaves`, `ptrs`, and `data`.
-- `RingORAMServer`: binary heap tree of `RingBucket` values and deterministic path/index helpers.
-- `RingORAMClient`: position map, stash, randomized leaf assignment, periodic eviction, and early reshuffle.
+- `EncryptedRingBucket`: plaintext `count` and `valids`, encrypted `addrs`, `leaves`, `ptrs`, and encrypted slot data.
+- `RingORAMServer`: binary heap tree of `EncryptedRingBucket` values, deterministic path/index helpers, and a command loop over `NetIO`.
+- `RingORAMClient`: position map, stash, randomized leaf assignment, periodic eviction, early reshuffle, AES-CTR encryption, and socket commands over `NetIO`.
 
 ## Data Flow
 
-`Access(a, op, data')` remaps `a` to a fresh leaf, selects one slot from each bucket on the old path, asks the server to XOR those selected payloads into one aggregate block, removes the block from the stash if it was already local, applies writes, and adds the remapped block to the stash. Every `A` accesses it evicts along the next leaf path. It then early-reshuffles touched buckets whose touch counter reached `S`.
+At startup the client generates the position map, builds an encrypted binary tree, and sends it to the server with an init command. Real zero blocks that do not fit in the initialized tree remain in the client stash.
 
-The simulated server supports the XOR technique for online bandwidth: `ReadPath` calls one aggregate server operation over the `L + 1` selected slots. The client tracks the selected dummy payloads locally and XORs those masks away from the aggregate result. If the target block was not selected on the path, the aggregate unmasks to only dummy material and the client falls back to the stash.
+`Access(a, op, data')` remaps `a` to a fresh leaf, fetches encrypted path metadata, selects one slot from each bucket on the old path, asks the server to XOR those selected encrypted payloads into one aggregate ciphertext, removes the block from the stash if it was already local, applies writes, and adds the remapped block to the stash. Every `A` accesses it evicts along the next leaf path. It then early-reshuffles touched buckets whose public touch counter reached `S`.
 
-`WriteBucket` greedily places up to `Z` eligible stash blocks into a bucket, pads every remaining slot with dummies, samples fresh slot offsets, marks all slots valid, and resets the bucket counter. `ReadBucket` removes all valid real blocks into the stash and pads the logical read count to `Z` by invalidating random valid dummy slots.
+The server supports the XOR technique for online bandwidth: `ReadPath` calls one aggregate server operation over the `L + 1` selected encrypted slots. The client reconstructs the selected encrypted dummy blocks and XORs those ciphertext masks away from the aggregate result. If the target block was not selected on the path, the client falls back to the stash.
+
+`WriteBucket` greedily places up to `Z` eligible stash blocks into a bucket, pads every remaining slot with dummies, samples fresh slot offsets, encrypts metadata and data under fresh IVs, marks all slots valid, resets the bucket counter, and sends the encrypted bucket to the server. `ReadBucket` downloads a full encrypted bucket for eviction or early reshuffle, decrypts all valid real blocks into the stash, and pads the logical read count to `Z` locally before the bucket is rewritten.
 
 ## Testing
 

@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <chrono>
 #include <cstdint>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -11,6 +14,10 @@
 
 namespace oram::ring_oram {
 namespace {
+
+std::atomic<int> g_port_counter{56400};
+
+int NextPort() { return g_port_counter.fetch_add(1, std::memory_order_relaxed); }
 
 RuntimeConfig SmallConfig() {
     RuntimeConfig cfg;
@@ -30,6 +37,43 @@ std::vector<uint8_t> MakeBlock(size_t block_size, uint8_t seed) {
     }
     return data;
 }
+
+std::vector<size_t> PathIndices(const RuntimeConfig& cfg, uint64_t leaf) {
+    std::vector<size_t> path;
+    path.reserve(cfg.tree_depth + 1);
+
+    size_t node = 0;
+    path.push_back(node);
+    for (size_t level = 0; level < cfg.tree_depth; ++level) {
+        const size_t bit = (leaf >> (cfg.tree_depth - 1 - level)) & 1ULL;
+        node = 2 * node + 1 + bit;
+        path.push_back(node);
+    }
+    return path;
+}
+
+class RingORAMNetworkTest : public ::testing::Test {
+   protected:
+    void TearDown() override {
+        if (server_thread_.joinable()) {
+            server_thread_.join();
+        }
+    }
+
+    void StartServer(const RuntimeConfig& config) {
+        config_ = config;
+        port_ = NextPort();
+        server_thread_ = std::thread([this]() {
+            RingORAMServer server("127.0.0.1", port_, config_);
+            server.HandleRequests();
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    RuntimeConfig config_;
+    int port_{};
+    std::thread server_thread_;
+};
 
 TEST(RingORAMBucketTest, BucketMetadataMatchesConfiguredShape) {
     const RuntimeConfig cfg = SmallConfig();
@@ -51,10 +95,22 @@ TEST(RingORAMBucketTest, BucketMetadataMatchesConfiguredShape) {
     }
 }
 
-TEST(RingORAMClientTest, WriteThenReadSingleBlock) {
+TEST_F(RingORAMNetworkTest, ClientInitializesEncryptedServerTreeOverSocket) {
     const RuntimeConfig cfg = SmallConfig();
-    RingORAMServer server(cfg, 0xC001);
-    RingORAMClient client(server, cfg, 0xBEEF);
+    StartServer(cfg);
+
+    {
+        RingORAMClient client("127.0.0.1", port_, cfg, 0xBEEF);
+        EXPECT_EQ(client.ServerBucketCount(0), 0U);
+        EXPECT_EQ(client.ServerXorPathReadCount(), 0U);
+    }
+}
+
+TEST_F(RingORAMNetworkTest, WriteThenReadSingleBlock) {
+    const RuntimeConfig cfg = SmallConfig();
+    StartServer(cfg);
+
+    RingORAMClient client("127.0.0.1", port_, cfg, 0xBEEF);
 
     const auto expected = MakeBlock(cfg.block_size, 0x20);
     client.Write(3, expected);
@@ -62,10 +118,11 @@ TEST(RingORAMClientTest, WriteThenReadSingleBlock) {
     EXPECT_EQ(client.Read(3), expected);
 }
 
-TEST(RingORAMClientTest, OverwriteReturnsLatestData) {
+TEST_F(RingORAMNetworkTest, OverwriteReturnsLatestData) {
     const RuntimeConfig cfg = SmallConfig();
-    RingORAMServer server(cfg, 0xC002);
-    RingORAMClient client(server, cfg, 0xBEEF);
+    StartServer(cfg);
+
+    RingORAMClient client("127.0.0.1", port_, cfg, 0xBEEF);
 
     client.Write(1, MakeBlock(cfg.block_size, 0x10));
     const auto latest = MakeBlock(cfg.block_size, 0x80);
@@ -74,7 +131,7 @@ TEST(RingORAMClientTest, OverwriteReturnsLatestData) {
     EXPECT_EQ(client.Read(1), latest);
 }
 
-TEST(RingORAMClientTest, PeriodicEvictionPreservesManyBlocks) {
+TEST_F(RingORAMNetworkTest, PeriodicEvictionPreservesManyBlocks) {
     RuntimeConfig cfg = SmallConfig();
     cfg.num_blocks = 16;
     cfg.tree_depth = 4;
@@ -83,8 +140,9 @@ TEST(RingORAMClientTest, PeriodicEvictionPreservesManyBlocks) {
     cfg.a = 2;
     cfg.block_size = 24;
 
-    RingORAMServer server(cfg, 0xC003);
-    RingORAMClient client(server, cfg, 0xBEEF);
+    StartServer(cfg);
+
+    RingORAMClient client("127.0.0.1", port_, cfg, 0xBEEF);
 
     std::vector<std::vector<uint8_t>> oracle(cfg.num_blocks);
     for (size_t addr = 0; addr < cfg.num_blocks; ++addr) {
@@ -107,43 +165,45 @@ TEST(RingORAMClientTest, PeriodicEvictionPreservesManyBlocks) {
     }
 }
 
-TEST(RingORAMClientTest, EarlyReshuffleResetsTouchedBucket) {
+TEST_F(RingORAMNetworkTest, EarlyReshuffleResetsTouchedBucket) {
     RuntimeConfig cfg = SmallConfig();
     cfg.s = 1;
     cfg.a = 64;
 
-    RingORAMServer server(cfg, 0xC004);
-    RingORAMClient client(server, cfg, 0xBEEF);
+    StartServer(cfg);
+
+    RingORAMClient client("127.0.0.1", port_, cfg, 0xBEEF);
 
     const uint64_t old_leaf = client.PositionMap().at(0);
-    const auto path = server.GetPathIndices(old_leaf);
+    const auto path = PathIndices(cfg, old_leaf);
 
     (void)client.Read(0);
 
     for (size_t bucket_idx : path) {
-        EXPECT_EQ(server.GetBucket(bucket_idx).count, 0U);
+        EXPECT_EQ(client.ServerBucketCount(bucket_idx), 0U);
     }
 }
 
-TEST(RingORAMClientTest, ReadPathUsesOneServerXorAggregate) {
+TEST_F(RingORAMNetworkTest, ReadPathUsesOneServerXorAggregate) {
     RuntimeConfig cfg = SmallConfig();
     cfg.a = 64;
 
-    RingORAMServer server(cfg, 0xC005);
-    RingORAMClient client(server, cfg, 0xBEEF);
+    StartServer(cfg);
+
+    RingORAMClient client("127.0.0.1", port_, cfg, 0xBEEF);
 
     const auto expected = MakeBlock(cfg.block_size, 0x31);
     client.Write(2, expected);
-    const uint64_t xor_reads_after_write = server.XorPathReadCount();
+    const uint64_t xor_reads_after_write = client.ServerXorPathReadCount();
 
     EXPECT_EQ(client.Read(2), expected);
 
-    EXPECT_EQ(server.XorPathReadCount(), xor_reads_after_write + 1);
-    EXPECT_EQ(server.LastXorPathSlotCount(), cfg.tree_depth + 1);
+    EXPECT_EQ(client.ServerXorPathReadCount(), xor_reads_after_write + 1);
+    EXPECT_EQ(client.ServerLastXorPathSlotCount(), cfg.tree_depth + 1);
     EXPECT_EQ(client.ReadPathCount(), 2U);
 }
 
-TEST(RingORAMClientTest, TenEvictionFrequenciesKeepReadPathEarlyReshuffleAndEvictionTogether) {
+TEST_F(RingORAMNetworkTest, TenEvictionFrequenciesKeepReadPathEarlyReshuffleAndEvictionTogether) {
     RuntimeConfig cfg = SmallConfig();
     cfg.num_blocks = 12;
     cfg.tree_depth = 4;
@@ -152,8 +212,9 @@ TEST(RingORAMClientTest, TenEvictionFrequenciesKeepReadPathEarlyReshuffleAndEvic
     cfg.a = 3;
     cfg.block_size = 20;
 
-    RingORAMServer server(cfg, 0xC006);
-    RingORAMClient client(server, cfg, 0xBEEF);
+    StartServer(cfg);
+
+    RingORAMClient client("127.0.0.1", port_, cfg, 0xBEEF);
 
     std::vector<std::vector<uint8_t>> oracle(cfg.num_blocks,
                                              std::vector<uint8_t>(cfg.block_size, 0));
@@ -183,7 +244,7 @@ TEST(RingORAMClientTest, TenEvictionFrequenciesKeepReadPathEarlyReshuffleAndEvic
     EXPECT_GE(client.ReadPathCount(), start_read_paths + total_accesses);
     EXPECT_GE(client.EvictionCounter(), start_evictions + 10);
     EXPECT_GT(client.EarlyReshuffleCount(), 0U);
-    EXPECT_GE(server.XorPathReadCount(), client.ReadPathCount());
+    EXPECT_GE(client.ServerXorPathReadCount(), client.ReadPathCount());
 }
 
 }  // namespace

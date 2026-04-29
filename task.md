@@ -25,3 +25,9 @@
 - [x] XOR ReadPath 1: Add failing aggregate-read and 10x eviction-frequency tests
 - [x] XOR ReadPath 2: Implement server-side path XOR and client dummy unmasking
 - [x] XOR ReadPath 3: Run verification
+- [x] Networked Ring ORAM 1: Record approved socket design and implementation plan
+- [x] Networked Ring ORAM 2: Add failing networked tests
+- [x] Networked Ring ORAM 3: Add encrypted bucket wire model
+- [x] Networked Ring ORAM 4: Implement NetIO server command loop
+- [x] Networked Ring ORAM 5: Implement NetIO client protocol
+- [x] Networked Ring ORAM 6: Run verification
