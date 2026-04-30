@@ -3,6 +3,8 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
+#include <string>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -58,6 +60,9 @@ class RingORAMNetworkTest : public ::testing::Test {
         if (server_thread_.joinable()) {
             server_thread_.join();
         }
+        for (const auto& path : temp_paths_) {
+            std::filesystem::remove_all(path);
+        }
     }
 
     void StartServer(const RuntimeConfig& config) {
@@ -70,9 +75,19 @@ class RingORAMNetworkTest : public ::testing::Test {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
+    std::filesystem::path MakeTempPath(const std::string& label) {
+        const auto path = std::filesystem::temp_directory_path() /
+                          ("unified_oramhub_ring_oram_" + label + "_" +
+                           std::to_string(NextPort()));
+        temp_paths_.push_back(path);
+        std::filesystem::remove_all(path);
+        return path;
+    }
+
     RuntimeConfig config_;
     int port_{};
     std::thread server_thread_;
+    std::vector<std::filesystem::path> temp_paths_;
 };
 
 TEST(RingORAMBucketTest, BucketMetadataMatchesConfiguredShape) {
@@ -104,6 +119,51 @@ TEST_F(RingORAMNetworkTest, ClientInitializesEncryptedServerTreeOverSocket) {
         EXPECT_EQ(client.ServerBucketCount(0), 0U);
         EXPECT_EQ(client.ServerXorPathReadCount(), 0U);
     }
+}
+
+TEST_F(RingORAMNetworkTest, DiskStorageInitializesServerTreeAndClientStashFiles) {
+    RuntimeConfig cfg = SmallConfig();
+    const auto root = MakeTempPath("init");
+    cfg.server_storage_dir = (root / "server").string();
+    cfg.stash_file_path = (root / "client" / "stash.bin").string();
+
+    StartServer(cfg);
+
+    {
+        RingORAMClient client("127.0.0.1", port_, cfg, 0xBEEF);
+
+        const auto tree_dir = std::filesystem::path(cfg.server_storage_dir) / "tree";
+        EXPECT_TRUE(std::filesystem::is_regular_file(tree_dir / "bucket_0.bin"));
+        EXPECT_TRUE(std::filesystem::is_regular_file(
+            tree_dir / ("bucket_" + std::to_string(cfg.NumTreeNodes() - 1) + ".bin")));
+
+        size_t bucket_file_count = 0;
+        for (const auto& entry : std::filesystem::directory_iterator(tree_dir)) {
+            if (entry.is_regular_file()) {
+                ++bucket_file_count;
+            }
+        }
+        EXPECT_EQ(bucket_file_count, cfg.NumTreeNodes());
+        EXPECT_TRUE(std::filesystem::is_regular_file(cfg.stash_file_path));
+    }
+}
+
+TEST_F(RingORAMNetworkTest, DiskBackedStashPreservesWriteReadWorkload) {
+    RuntimeConfig cfg = SmallConfig();
+    const auto root = MakeTempPath("stash");
+    cfg.server_storage_dir = (root / "server").string();
+    cfg.stash_file_path = (root / "client" / "stash.bin").string();
+
+    StartServer(cfg);
+
+    RingORAMClient client("127.0.0.1", port_, cfg, 0xBEEF);
+
+    const auto expected = MakeBlock(cfg.block_size, 0x44);
+    client.Write(4, expected);
+
+    EXPECT_EQ(client.Read(4), expected);
+    ASSERT_TRUE(std::filesystem::is_regular_file(cfg.stash_file_path));
+    EXPECT_GT(std::filesystem::file_size(cfg.stash_file_path), 0U);
 }
 
 TEST_F(RingORAMNetworkTest, WriteThenReadSingleBlock) {

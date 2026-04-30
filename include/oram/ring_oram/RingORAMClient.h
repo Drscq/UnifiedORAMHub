@@ -67,6 +67,8 @@ class RingORAMClient : public core::RAM {
     void RemoveBlockFromStash(uint64_t addr);
     std::vector<size_t> ValidRealOffsets(const RingBucket& bucket) const;
     std::vector<size_t> ValidDummyOffsets(const RingBucket& bucket) const;
+    void LoadStashFromDisk();
+    void SaveStashToDisk() const;
 
     std::vector<size_t> GetPathIndices(uint64_t leaf) const;
     void InitializeServerStorage();
@@ -95,6 +97,8 @@ class RingORAMClient : public core::RAM {
     RuntimeConfig config_;
     std::unordered_map<uint64_t, uint64_t> position_map_;
     std::vector<RingBlock> stash_;
+    std::string stash_file_path_;
+    bool stash_file_initialized_ = false;
     size_t round_ = 0;
     uint64_t eviction_counter_ = 0;
     size_t read_path_count_ = 0;

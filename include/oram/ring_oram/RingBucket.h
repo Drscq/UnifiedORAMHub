@@ -20,6 +20,12 @@ struct RingBlock {
     static RingBlock Dummy(size_t block_size);
 };
 
+std::vector<uint8_t> SerializeRingBlock(const RingBlock& block);
+RingBlock DeserializeRingBlock(const std::vector<uint8_t>& bytes);
+
+std::vector<uint8_t> SerializeRingBlocks(const std::vector<RingBlock>& blocks);
+std::vector<RingBlock> DeserializeRingBlocks(const std::vector<uint8_t>& bytes);
+
 struct EncryptedField {
     std::vector<uint8_t> iv;
     std::vector<uint8_t> ciphertext;
