@@ -109,10 +109,62 @@ std::vector<EncryptedField> ReadFields(const std::vector<uint8_t>& bytes, size_t
     return fields;
 }
 
+void AppendRingBlock(std::vector<uint8_t>* out, const RingBlock& block) {
+    AppendUint64(out, block.addr);
+    AppendUint64(out, block.leaf);
+    AppendBytes(out, block.data);
+}
+
+RingBlock ReadRingBlockPayload(const std::vector<uint8_t>& bytes, size_t* offset) {
+    RingBlock block;
+    block.addr = ReadUint64(bytes, offset);
+    block.leaf = ReadUint64(bytes, offset);
+    block.data = ReadBytes(bytes, offset);
+    return block;
+}
+
 }  // namespace
 
 RingBlock RingBlock::Dummy(size_t block_size) {
     return RingBlock{kDummyAddress, 0, std::vector<uint8_t>(block_size, 0)};
+}
+
+std::vector<uint8_t> SerializeRingBlock(const RingBlock& block) {
+    std::vector<uint8_t> bytes;
+    AppendRingBlock(&bytes, block);
+    return bytes;
+}
+
+RingBlock DeserializeRingBlock(const std::vector<uint8_t>& bytes) {
+    size_t offset = 0;
+    RingBlock block = ReadRingBlockPayload(bytes, &offset);
+    if (offset != bytes.size()) {
+        throw std::invalid_argument("Ring ORAM block has trailing bytes");
+    }
+    return block;
+}
+
+std::vector<uint8_t> SerializeRingBlocks(const std::vector<RingBlock>& blocks) {
+    std::vector<uint8_t> bytes;
+    AppendUint64(&bytes, blocks.size());
+    for (const auto& block : blocks) {
+        AppendRingBlock(&bytes, block);
+    }
+    return bytes;
+}
+
+std::vector<RingBlock> DeserializeRingBlocks(const std::vector<uint8_t>& bytes) {
+    size_t offset = 0;
+    const uint64_t count = ReadUint64(bytes, &offset);
+    std::vector<RingBlock> blocks;
+    blocks.reserve(count);
+    for (uint64_t i = 0; i < count; ++i) {
+        blocks.push_back(ReadRingBlockPayload(bytes, &offset));
+    }
+    if (offset != bytes.size()) {
+        throw std::invalid_argument("Ring ORAM stash has trailing bytes");
+    }
+    return blocks;
 }
 
 std::vector<uint8_t> SerializeEncryptedRingBucket(const EncryptedRingBucket& bucket) {

@@ -22,7 +22,7 @@ class RingORAMServer {
     void Stop();
 
     const RuntimeConfig& Config() const { return config_; }
-    size_t NumNodes() const { return tree_.size(); }
+    size_t NumNodes() const { return node_count_; }
     size_t NumLeaves() const { return config_.NumLeaves(); }
 
     std::vector<size_t> GetPathIndices(uint64_t leaf) const;
@@ -36,8 +36,10 @@ class RingORAMServer {
    private:
     void ValidateConfig() const;
     void ValidateInitialized() const;
-    const EncryptedRingBucket& GetBucket(size_t bucket_idx) const;
-    EncryptedRingBucket& GetBucket(size_t bucket_idx);
+    std::string BucketPath(size_t bucket_idx) const;
+    EncryptedRingBucket ReadBucketFromDisk(size_t bucket_idx) const;
+    void WriteBucketToDisk(size_t bucket_idx, const EncryptedRingBucket& bucket) const;
+    void ValidateBucketShape(const EncryptedRingBucket& bucket, const std::string& context) const;
 
     void HandleInit();
     void HandleReadPathMetadata();
@@ -48,7 +50,9 @@ class RingORAMServer {
     void HandleReadStats();
 
     RuntimeConfig config_;
-    std::vector<EncryptedRingBucket> tree_;
+    std::string storage_dir_;
+    std::string tree_dir_;
+    size_t node_count_ = 0;
     std::unique_ptr<network::NetIO> net_io_;
     bool running_ = false;
     uint64_t xor_path_read_count_ = 0;

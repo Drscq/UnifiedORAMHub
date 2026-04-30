@@ -1,7 +1,11 @@
 #include "oram/ring_oram/RingORAMClient.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <stdexcept>
 
 namespace oram::ring_oram {
@@ -28,11 +32,34 @@ std::vector<uint8_t> FixedClientKey() {
     return std::vector<uint8_t>(crypto::AES_CTR::kKeySize128, 0x52);
 }
 
+std::string SanitizePathPart(std::string value) {
+    std::replace_if(
+        value.begin(), value.end(),
+        [](unsigned char ch) { return std::isalnum(ch) == 0 && ch != '-' && ch != '_'; }, '_');
+    return value;
+}
+
+std::string DefaultStashFilePath(const std::string& server_address, int port) {
+    const auto dirname = "client_" + SanitizePathPart(server_address) + "_" + std::to_string(port);
+    return (std::filesystem::temp_directory_path() / "unified_oramhub_ring_oram" / dirname /
+            "stash.bin")
+        .string();
+}
+
+std::string ResolveStashFilePath(const std::string& server_address, int port,
+                                 const RuntimeConfig& config) {
+    if (!config.stash_file_path.empty()) {
+        return config.stash_file_path;
+    }
+    return DefaultStashFilePath(server_address, port);
+}
+
 }  // namespace
 
 RingORAMClient::RingORAMClient(const std::string& server_address, int port,
                                const RuntimeConfig& config, uint64_t seed)
     : config_(config),
+      stash_file_path_(ResolveStashFilePath(server_address, port, config)),
       prng_(seed),
       net_io_(std::make_unique<network::NetIO>(server_address, port, false, true)),
       cipher_(std::make_unique<crypto::AES_CTR>(FixedClientKey())) {
@@ -47,6 +74,8 @@ RingORAMClient::RingORAMClient(const std::string& server_address, int port,
                                    std::vector<uint8_t>(config_.block_size, 0)});
     }
 
+    SaveStashToDisk();
+    stash_file_initialized_ = true;
     InitializeServerStorage();
 }
 
@@ -67,6 +96,45 @@ uint64_t RingORAMClient::GetRandomLeaf() {
 void RingORAMClient::ValidateAddress(uint64_t addr) const {
     if (addr >= config_.num_blocks) {
         throw std::out_of_range("Ring ORAM address out of range");
+    }
+}
+
+void RingORAMClient::LoadStashFromDisk() {
+    std::ifstream input(stash_file_path_, std::ios::binary);
+    if (!input) {
+        if (stash_file_initialized_) {
+            throw std::runtime_error("Ring ORAM stash file is missing");
+        }
+        stash_.clear();
+        return;
+    }
+
+    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(input)),
+                               std::istreambuf_iterator<char>());
+    stash_ = DeserializeRingBlocks(bytes);
+    for (const auto& block : stash_) {
+        if (block.data.size() != config_.block_size) {
+            throw std::runtime_error("Ring ORAM stash block size mismatch");
+        }
+    }
+}
+
+void RingORAMClient::SaveStashToDisk() const {
+    const auto path = std::filesystem::path(stash_file_path_);
+    const auto parent = path.parent_path();
+    if (!parent.empty()) {
+        std::filesystem::create_directories(parent);
+    }
+
+    const auto bytes = SerializeRingBlocks(stash_);
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    if (!output) {
+        throw std::runtime_error("Ring ORAM stash file could not be opened for writing");
+    }
+    output.write(reinterpret_cast<const char*>(bytes.data()),
+                 static_cast<std::streamsize>(bytes.size()));
+    if (!output) {
+        throw std::runtime_error("Ring ORAM stash file write failed");
     }
 }
 
@@ -312,15 +380,23 @@ void RingORAMClient::PutBlockInStash(const RingBlock& block) {
     if (block.IsDummy()) {
         return;
     }
-    RemoveBlockFromStash(block.addr);
+    LoadStashFromDisk();
+    stash_.erase(std::remove_if(stash_.begin(), stash_.end(),
+                                [addr = block.addr](const RingBlock& stashed) {
+                                    return stashed.addr == addr;
+                                }),
+                 stash_.end());
     stash_.push_back(block);
+    SaveStashToDisk();
 }
 
 std::optional<RingBlock> RingORAMClient::TakeBlockFromStash(uint64_t addr) {
+    LoadStashFromDisk();
     for (auto it = stash_.begin(); it != stash_.end(); ++it) {
         if (it->addr == addr) {
             RingBlock block = *it;
             stash_.erase(it);
+            SaveStashToDisk();
             return block;
         }
     }
@@ -328,9 +404,14 @@ std::optional<RingBlock> RingORAMClient::TakeBlockFromStash(uint64_t addr) {
 }
 
 void RingORAMClient::RemoveBlockFromStash(uint64_t addr) {
+    LoadStashFromDisk();
+    const size_t old_size = stash_.size();
     stash_.erase(std::remove_if(stash_.begin(), stash_.end(),
                                 [addr](const RingBlock& block) { return block.addr == addr; }),
                  stash_.end());
+    if (stash_.size() != old_size) {
+        SaveStashToDisk();
+    }
 }
 
 std::vector<size_t> RingORAMClient::ValidRealOffsets(const RingBucket& bucket) const {
@@ -394,6 +475,7 @@ void RingORAMClient::FillBucketFromStash(size_t bucket_idx, RingBucket* bucket) 
         throw std::invalid_argument("Ring ORAM bucket pointer is null");
     }
 
+    LoadStashFromDisk();
     std::vector<RingBlock> selected;
     selected.reserve(config_.z);
 
@@ -407,6 +489,7 @@ void RingORAMClient::FillBucketFromStash(size_t bucket_idx, RingBucket* bucket) 
         }
     }
     bucket->ResetWithBlocks(selected, &prng_);
+    SaveStashToDisk();
 }
 
 EncryptedField RingORAMClient::EncryptBytes(const std::vector<uint8_t>& plaintext) {
