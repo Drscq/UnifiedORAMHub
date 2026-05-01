@@ -54,3 +54,24 @@
 - [x] Implementation 1: Add failing disk-backed server tests
 - [x] Implementation 2: Persist Path ORAM server buckets on disk
 - [x] Implementation 3: Run verification
+
+# ORAM Delay Comparison Task Tracker
+
+- [x] Brainstorming 1: Explore project context
+- [x] Brainstorming 2: Ask clarifying questions
+- [x] Brainstorming 3: Propose implementation approaches
+- [x] Brainstorming 4: Present design and get approval
+- [x] Brainstorming 5: Write design doc
+- [x] Planning 1: Write implementation plan
+- [x] Implementation 1: Add failing delay model tests
+- [x] Implementation 2: Add benchmark script
+- [x] Implementation 3: Document run commands
+- [x] Implementation 4: Run verification
+- [x] TC Limiter 1: Add failing dry-run tests
+- [x] TC Limiter 2: Add manual tc helper script
+- [x] TC Limiter 3: Document manual traffic shaping
+- [x] TC Limiter 4: Run verification
+- [x] TCP Benchmark 1: Add failing payload-plan tests
+- [x] TCP Benchmark 2: Add end-to-end TCP benchmark harness
+- [x] TCP Benchmark 3: Run specified 480-access comparison under tc
+- [x] TCP Benchmark 4: Document benchmark command

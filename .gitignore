@@ -9,4 +9,6 @@ CMakeCache.txt
 CMakeFiles/
 compile_commands.json
 .cache/
+__pycache__/
+*.pyc
 .DS_Store
