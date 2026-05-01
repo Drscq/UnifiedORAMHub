@@ -75,3 +75,14 @@
 - [x] TCP Benchmark 2: Add end-to-end TCP benchmark harness
 - [x] TCP Benchmark 3: Run specified 480-access comparison under tc
 - [x] TCP Benchmark 4: Document benchmark command
+
+# Path ORAM Batched RTT Task Tracker
+
+- [x] Brainstorming 1: Explore project context
+- [x] Brainstorming 2: Confirm Path-only RTT optimization scope
+- [x] Brainstorming 3: Select batched path read/write protocol
+- [x] Brainstorming 4: Write design doc
+- [x] Planning 1: Write implementation plan
+- [x] Implementation 1: Add failing protocol-shape test
+- [x] Implementation 2: Batch Path ORAM read/write path requests
+- [x] Implementation 3: Run verification

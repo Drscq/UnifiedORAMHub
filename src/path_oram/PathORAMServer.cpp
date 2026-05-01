@@ -60,6 +60,8 @@ PathORAMServer::PathORAMServer(const std::string& address, int port, size_t tree
 
 PathORAMServer::~PathORAMServer() { Stop(); }
 
+PathORAMServer::RequestStats PathORAMServer::GetRequestStats() const { return request_stats_; }
+
 void PathORAMServer::Init(const std::vector<core::Block>& initial_blocks) {
     if (initial_blocks.size() > num_leaves_) {
         throw std::invalid_argument("Too many blocks for tree capacity");
@@ -194,6 +196,7 @@ core::Bucket PathORAMServer::DecryptBucket(const std::vector<uint8_t>& encrypted
 
 void PathORAMServer::HandleReadBucket(size_t bucket_index) {
     ValidateInitialized();
+    ++request_stats_.read_bucket_requests;
 
     // Encrypt bucket
     auto encrypted = EncryptBucket(ReadBucketFromDisk(bucket_index));
@@ -207,6 +210,7 @@ void PathORAMServer::HandleReadBucket(size_t bucket_index) {
 
 void PathORAMServer::HandleWriteBucket(size_t bucket_index) {
     ValidateInitialized();
+    ++request_stats_.write_bucket_requests;
 
     // Receive size
     uint64_t size;
@@ -218,6 +222,65 @@ void PathORAMServer::HandleWriteBucket(size_t bucket_index) {
 
     // Decrypt and store
     WriteBucketToDisk(bucket_index, DecryptBucket(encrypted));
+}
+
+void PathORAMServer::HandleReadPath() {
+    ValidateInitialized();
+
+    uint64_t count = 0;
+    net_io_->RecvData(&count, sizeof(count));
+    if (count != tree_height_ + 1) {
+        throw std::invalid_argument("Path ORAM read path request count mismatch");
+    }
+
+    std::vector<uint64_t> bucket_indices(count);
+    for (uint64_t& bucket_index : bucket_indices) {
+        net_io_->RecvData(&bucket_index, sizeof(bucket_index));
+    }
+
+    ++request_stats_.read_path_requests;
+
+    net_io_->SendData(&count, sizeof(count));
+    for (uint64_t bucket_index : bucket_indices) {
+        auto encrypted = EncryptBucket(ReadBucketFromDisk(static_cast<size_t>(bucket_index)));
+        uint64_t size = encrypted.size();
+        net_io_->SendData(&size, sizeof(size));
+        if (!encrypted.empty()) {
+            net_io_->SendData(encrypted.data(), encrypted.size());
+        }
+    }
+    net_io_->Flush();
+}
+
+void PathORAMServer::HandleWritePath() {
+    ValidateInitialized();
+
+    uint64_t count = 0;
+    net_io_->RecvData(&count, sizeof(count));
+    if (count != tree_height_ + 1) {
+        throw std::invalid_argument("Path ORAM write path request count mismatch");
+    }
+
+    for (uint64_t i = 0; i < count; ++i) {
+        uint64_t bucket_index = 0;
+        net_io_->RecvData(&bucket_index, sizeof(bucket_index));
+
+        uint64_t size = 0;
+        net_io_->RecvData(&size, sizeof(size));
+
+        std::vector<uint8_t> encrypted(size);
+        if (size > 0) {
+            net_io_->RecvData(encrypted.data(), encrypted.size());
+        }
+
+        WriteBucketToDisk(static_cast<size_t>(bucket_index), DecryptBucket(encrypted));
+    }
+
+    ++request_stats_.write_path_requests;
+
+    char ack = 'A';
+    net_io_->SendData(&ack, 1);
+    net_io_->Flush();
 }
 
 void PathORAMServer::HandleRequests() {
@@ -235,14 +298,18 @@ void PathORAMServer::HandleRequests() {
                 break;
             }
 
-            // Read bucket index
-            uint64_t bucket_index;
-            net_io_->RecvData(&bucket_index, sizeof(bucket_index));
-
             if (command == 'R') {
+                uint64_t bucket_index;
+                net_io_->RecvData(&bucket_index, sizeof(bucket_index));
                 HandleReadBucket(bucket_index);
             } else if (command == 'W') {
+                uint64_t bucket_index;
+                net_io_->RecvData(&bucket_index, sizeof(bucket_index));
                 HandleWriteBucket(bucket_index);
+            } else if (command == 'P') {
+                HandleReadPath();
+            } else if (command == 'T') {
+                HandleWritePath();
             } else {
                 std::cerr << "Unknown command: " << command << std::endl;
             }

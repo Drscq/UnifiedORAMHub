@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <memory>
 #include <string>
 #include <vector>
@@ -14,6 +15,13 @@ namespace oram::path_oram {
 
 class PathORAMServer {
    public:
+    struct RequestStats {
+        size_t read_bucket_requests = 0;
+        size_t write_bucket_requests = 0;
+        size_t read_path_requests = 0;
+        size_t write_path_requests = 0;
+    };
+
     PathORAMServer(const std::string& address, int port,
                    size_t tree_height = Config::kDefaultTreeHeight,
                    const std::string& storage_dir = "");
@@ -27,6 +35,8 @@ class PathORAMServer {
 
     // Stop the server
     void Stop();
+
+    RequestStats GetRequestStats() const;
 
    private:
     // Server state
@@ -43,6 +53,7 @@ class PathORAMServer {
 
     // Server control
     bool running_;
+    RequestStats request_stats_;
 
     // Helper methods
     void FillBucketWithDummies(core::Bucket& bucket);
@@ -57,6 +68,8 @@ class PathORAMServer {
     // Protocol handlers
     void HandleReadBucket(size_t bucket_index);
     void HandleWriteBucket(size_t bucket_index);
+    void HandleReadPath();
+    void HandleWritePath();
 };
 
 }  // namespace oram::path_oram

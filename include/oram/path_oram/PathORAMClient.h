@@ -48,6 +48,9 @@ class PathORAMClient : public core::RAM {
     void WritePath(uint64_t leaf);
     core::Bucket ReadBucketFromServer(size_t bucket_index);
     void WriteBucketToServer(size_t bucket_index, const core::Bucket& bucket);
+    std::vector<core::Bucket> ReadPathFromServer(const std::vector<size_t>& path);
+    void WritePathToServer(const std::vector<size_t>& path,
+                           const std::vector<core::Bucket>& path_buckets);
 
     // Stash management
     core::Block* FindBlockInStash(uint64_t block_id);

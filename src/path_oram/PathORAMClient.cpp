@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <iostream>
 #include <random>
+#include <stdexcept>
 
 #include "oram/core/Serializer.h"
 
@@ -133,12 +134,9 @@ size_t PathORAMClient::GetBucketIndex(uint64_t leaf, size_t level) {
 
 void PathORAMClient::ReadPath(uint64_t leaf) {
     auto path = GetPathIndices(leaf);
+    auto path_buckets = ReadPathFromServer(path);
 
-    // Read each bucket on the path
-    for (size_t bucket_idx : path) {
-        core::Bucket bucket = ReadBucketFromServer(bucket_idx);
-
-        // Add all real blocks to stash
+    for (const auto& bucket : path_buckets) {
         for (const auto& block : bucket.GetBlocks()) {
             if (block.GetId() != ~0ULL) {  // Not a dummy block
                 stash_.push_back(block);
@@ -168,10 +166,7 @@ void PathORAMClient::WritePath(uint64_t leaf) {
         }
     }
 
-    // Write buckets back to server
-    for (size_t i = 0; i < path.size(); ++i) {
-        WriteBucketToServer(path[i], path_buckets[i]);
-    }
+    WritePathToServer(path, path_buckets);
 }
 
 void PathORAMClient::EvictBlocksToPath(uint64_t leaf, std::vector<core::Bucket>& path_buckets) {
@@ -277,6 +272,71 @@ void PathORAMClient::WriteBucketToServer(size_t bucket_index, const core::Bucket
     // Send encrypted data
     net_io_->SendData(encrypted.data(), encrypted.size());
     net_io_->Flush();
+}
+
+std::vector<core::Bucket> PathORAMClient::ReadPathFromServer(const std::vector<size_t>& path) {
+    char cmd = 'P';
+    net_io_->SendData(&cmd, 1);
+
+    uint64_t count = path.size();
+    net_io_->SendData(&count, sizeof(count));
+    for (size_t bucket_index : path) {
+        uint64_t idx = bucket_index;
+        net_io_->SendData(&idx, sizeof(idx));
+    }
+    net_io_->Flush();
+
+    uint64_t response_count = 0;
+    net_io_->RecvData(&response_count, sizeof(response_count));
+    if (response_count != count) {
+        throw std::runtime_error("Path ORAM read path response count mismatch");
+    }
+
+    std::vector<core::Bucket> buckets;
+    buckets.reserve(static_cast<size_t>(response_count));
+    for (size_t i = 0; i < response_count; ++i) {
+        uint64_t size = 0;
+        net_io_->RecvData(&size, sizeof(size));
+
+        std::vector<uint8_t> encrypted(size);
+        if (size > 0) {
+            net_io_->RecvData(encrypted.data(), encrypted.size());
+        }
+        buckets.push_back(DecryptBucket(encrypted));
+    }
+
+    return buckets;
+}
+
+void PathORAMClient::WritePathToServer(const std::vector<size_t>& path,
+                                       const std::vector<core::Bucket>& path_buckets) {
+    if (path.size() != path_buckets.size()) {
+        throw std::invalid_argument("Path ORAM write path size mismatch");
+    }
+
+    char cmd = 'T';
+    net_io_->SendData(&cmd, 1);
+
+    uint64_t count = path.size();
+    net_io_->SendData(&count, sizeof(count));
+    for (size_t i = 0; i < path.size(); ++i) {
+        uint64_t idx = path[i];
+        net_io_->SendData(&idx, sizeof(idx));
+
+        auto encrypted = EncryptBucket(path_buckets[i]);
+        uint64_t size = encrypted.size();
+        net_io_->SendData(&size, sizeof(size));
+        if (!encrypted.empty()) {
+            net_io_->SendData(encrypted.data(), encrypted.size());
+        }
+    }
+    net_io_->Flush();
+
+    char ack = 0;
+    net_io_->RecvData(&ack, 1);
+    if (ack != 'A') {
+        throw std::runtime_error("Path ORAM write path acknowledgement mismatch");
+    }
 }
 
 std::vector<uint8_t> PathORAMClient::EncryptBucket(const core::Bucket& bucket) {
