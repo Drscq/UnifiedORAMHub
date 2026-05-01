@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "oram/core/Block.h"
@@ -14,7 +15,8 @@ namespace oram::path_oram {
 class PathORAMServer {
    public:
     PathORAMServer(const std::string& address, int port,
-                   size_t tree_height = Config::kDefaultTreeHeight);
+                   size_t tree_height = Config::kDefaultTreeHeight,
+                   const std::string& storage_dir = "");
     ~PathORAMServer();
 
     // Initialize the tree with real blocks placed in leaves
@@ -31,7 +33,9 @@ class PathORAMServer {
     size_t tree_height_;
     size_t num_nodes_;
     size_t num_leaves_;
-    std::vector<core::Bucket> tree_;
+    size_t node_count_;
+    std::string storage_dir_;
+    std::string tree_dir_;
 
     // Network and crypto
     std::unique_ptr<network::NetIO> net_io_;
@@ -41,8 +45,12 @@ class PathORAMServer {
     bool running_;
 
     // Helper methods
-    void InitializeTreeWithDummies();
-    void PlaceBlocksInLeaves(const std::vector<core::Block>& blocks);
+    void FillBucketWithDummies(core::Bucket& bucket);
+    void ValidateInitialized() const;
+    void ValidateBucketShape(const core::Bucket& bucket, const std::string& context) const;
+    std::string BucketPath(size_t bucket_index) const;
+    core::Bucket ReadBucketFromDisk(size_t bucket_index) const;
+    void WriteBucketToDisk(size_t bucket_index, const core::Bucket& bucket) const;
     std::vector<uint8_t> EncryptBucket(const core::Bucket& bucket);
     core::Bucket DecryptBucket(const std::vector<uint8_t>& encrypted_data);
 

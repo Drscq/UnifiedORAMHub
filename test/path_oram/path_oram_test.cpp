@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
 #include <random>
 #include <string>
 #include <thread>
@@ -32,6 +33,21 @@ namespace {
 std::atomic<int> g_port_counter{54400};
 
 int NextPort() { return g_port_counter.fetch_add(1, std::memory_order_relaxed); }
+
+std::filesystem::path PathORAMStorageDirForPort(int port) {
+    return std::filesystem::temp_directory_path() /
+           ("unified_oramhub_path_oram_test_" + std::to_string(port));
+}
+
+size_t CountRegularFiles(const std::filesystem::path& dir) {
+    size_t count = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+        if (entry.is_regular_file()) {
+            ++count;
+        }
+    }
+    return count;
+}
 
 }  // namespace
 
@@ -152,6 +168,49 @@ TEST_F(PathORAMTest, OverwriteData) {
 
     auto result = client.Read(addr);
     EXPECT_EQ(result, data2);
+}
+
+TEST(PathORAMDiskBackedTest, ServerStoresBucketTreeOnDisk) {
+    constexpr size_t kTreeHeight = 4;
+    constexpr size_t kNumBlocks  = 16;
+
+    const int port = NextPort();
+    const auto storage_dir = PathORAMStorageDirForPort(port);
+    const auto tree_dir = storage_dir / "tree";
+    const size_t expected_nodes = path_oram::Config::GetNumTreeNodes(kTreeHeight);
+
+    std::filesystem::remove_all(storage_dir);
+
+    std::thread server_thread([&]() {
+        path_oram::PathORAMServer server("127.0.0.1", port, kTreeHeight, storage_dir.string());
+        server.Init({});
+        server.HandleRequests();
+    });
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    {
+        path_oram::PathORAMClient client("127.0.0.1", port, kTreeHeight, kNumBlocks);
+
+        std::vector<uint8_t> write_data(path_oram::Config::kBlockSize, 0x5A);
+        client.Write(2, write_data);
+        EXPECT_EQ(client.Read(2), write_data);
+    }
+
+    if (server_thread.joinable()) {
+        server_thread.join();
+    }
+
+    const auto first_bucket = tree_dir / "bucket_0.bin";
+    const auto last_bucket = tree_dir / ("bucket_" + std::to_string(expected_nodes - 1) + ".bin");
+
+    EXPECT_TRUE(std::filesystem::is_regular_file(first_bucket));
+    EXPECT_TRUE(std::filesystem::is_regular_file(last_bucket));
+    EXPECT_EQ(CountRegularFiles(tree_dir), expected_nodes);
+    EXPECT_GT(std::filesystem::file_size(first_bucket), 0u);
+    EXPECT_GT(std::filesystem::file_size(last_bucket), 0u);
+
+    std::filesystem::remove_all(storage_dir);
 }
 
 // ===========================================================================

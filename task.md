@@ -43,3 +43,14 @@
 - [x] Implementation 1: Add failing tests
 - [x] Implementation 2: Implement disk-backed tree and stash
 - [x] Implementation 3: Run verification
+
+# Disk-Backed Path ORAM Task Tracker
+
+- [x] Brainstorming 1: Explore project context
+- [x] Brainstorming 2: Confirm current Path ORAM storage behavior
+- [x] Brainstorming 3: Select disk-backed server-tree approach
+- [x] Brainstorming 4: Write design doc
+- [x] Planning 1: Write implementation plan
+- [x] Implementation 1: Add failing disk-backed server tests
+- [x] Implementation 2: Persist Path ORAM server buckets on disk
+- [x] Implementation 3: Run verification

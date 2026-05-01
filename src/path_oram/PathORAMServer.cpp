@@ -1,16 +1,51 @@
 #include "oram/path_oram/PathORAMServer.h"
 
+#include <algorithm>
+#include <cctype>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <stdexcept>
 
 #include "oram/core/Serializer.h"
 
 namespace oram::path_oram {
 
-PathORAMServer::PathORAMServer(const std::string& address, int port, size_t tree_height)
+namespace {
+
+std::string SanitizePathPart(std::string value) {
+    std::replace_if(
+        value.begin(), value.end(),
+        [](unsigned char ch) { return std::isalnum(ch) == 0 && ch != '-' && ch != '_'; }, '_');
+    return value;
+}
+
+std::string DefaultServerStorageDir(const std::string& address, int port) {
+    const auto dirname = "server_" + SanitizePathPart(address) + "_" + std::to_string(port);
+    return (std::filesystem::temp_directory_path() / "unified_oramhub_path_oram" / dirname)
+        .string();
+}
+
+std::string ResolveServerStorageDir(const std::string& address, int port,
+                                    const std::string& storage_dir) {
+    if (!storage_dir.empty()) {
+        return storage_dir;
+    }
+    return DefaultServerStorageDir(address, port);
+}
+
+}  // namespace
+
+PathORAMServer::PathORAMServer(const std::string& address, int port, size_t tree_height,
+                               const std::string& storage_dir)
     : tree_height_(tree_height),
       num_nodes_(Config::GetNumTreeNodes(tree_height)),
       num_leaves_(Config::GetNumLeaves(tree_height)),
+      node_count_(0),
+      storage_dir_(ResolveServerStorageDir(address, port, storage_dir)),
+      tree_dir_((std::filesystem::path(storage_dir_) / "tree").string()),
       running_(false) {
     // Initialize network (server mode)
     net_io_ = std::make_unique<network::NetIO>(address, port, true, false);
@@ -30,45 +65,96 @@ void PathORAMServer::Init(const std::vector<core::Block>& initial_blocks) {
         throw std::invalid_argument("Too many blocks for tree capacity");
     }
 
-    // Initialize all buckets
-    tree_.clear();
-    tree_.reserve(num_nodes_);
-    for (size_t i = 0; i < num_nodes_; ++i) {
-        tree_.emplace_back(Config::kBucketSize);
+    std::filesystem::remove_all(tree_dir_);
+    std::filesystem::create_directories(tree_dir_);
+    node_count_ = num_nodes_;
+
+    const size_t leaf_offset = Config::GetLeafOffset(tree_height_);
+    for (size_t bucket_index = 0; bucket_index < num_nodes_; ++bucket_index) {
+        core::Bucket bucket(Config::kBucketSize);
+
+        if (bucket_index >= leaf_offset) {
+            const size_t leaf = bucket_index - leaf_offset;
+            if (leaf < initial_blocks.size()) {
+                bucket.AddBlock(initial_blocks[leaf]);
+            }
+        }
+
+        FillBucketWithDummies(bucket);
+        WriteBucketToDisk(bucket_index, bucket);
     }
-
-    // Place real blocks in leaf nodes
-    PlaceBlocksInLeaves(initial_blocks);
-
-    // Fill remaining space with dummy blocks
-    InitializeTreeWithDummies();
 
     std::cout << "Server initialized with " << initial_blocks.size() << " real blocks" << std::endl;
 }
 
-void PathORAMServer::PlaceBlocksInLeaves(const std::vector<core::Block>& blocks) {
-    size_t leaf_offset = Config::GetLeafOffset(tree_height_);
-
-    for (size_t i = 0; i < blocks.size(); ++i) {
-        size_t leaf_index = leaf_offset + i;
-        if (leaf_index < num_nodes_) {
-            tree_[leaf_index].AddBlock(blocks[i]);
+void PathORAMServer::FillBucketWithDummies(core::Bucket& bucket) {
+    // Pad the bucket to full capacity with dummy blocks (ID = ~0).
+    while (bucket.GetBlockCount() < Config::kBucketSize) {
+        std::vector<uint8_t> dummy_data(Config::kBlockSize);
+        for (size_t i = 0; i < dummy_data.size(); ++i) {
+            dummy_data[i] = static_cast<uint8_t>(std::rand() % 256);
         }
+        core::Block dummy(~0ULL, dummy_data);
+        bucket.AddBlock(dummy);
     }
 }
 
-void PathORAMServer::InitializeTreeWithDummies() {
-    // Pad all buckets to full capacity with dummy blocks (ID = ~0)
-    for (auto& bucket : tree_) {
-        while (bucket.GetBlockCount() < Config::kBucketSize) {
-            // Dummy block has max ID and random data
-            std::vector<uint8_t> dummy_data(Config::kBlockSize);
-            for (size_t i = 0; i < dummy_data.size(); ++i) {
-                dummy_data[i] = rand() % 256;
-            }
-            core::Block dummy(~0ULL, dummy_data);
-            bucket.AddBlock(dummy);
-        }
+void PathORAMServer::ValidateInitialized() const {
+    if (node_count_ != num_nodes_ || !std::filesystem::is_directory(tree_dir_)) {
+        throw std::runtime_error("Path ORAM server has not been initialized");
+    }
+}
+
+void PathORAMServer::ValidateBucketShape(const core::Bucket& bucket,
+                                         const std::string& context) const {
+    if (bucket.GetCapacity() != Config::kBucketSize ||
+        bucket.GetBlockCount() > Config::kBucketSize) {
+        throw std::invalid_argument("Path ORAM " + context + " bucket shape mismatch");
+    }
+}
+
+std::string PathORAMServer::BucketPath(size_t bucket_index) const {
+    return (std::filesystem::path(tree_dir_) / ("bucket_" + std::to_string(bucket_index) + ".bin"))
+        .string();
+}
+
+core::Bucket PathORAMServer::ReadBucketFromDisk(size_t bucket_index) const {
+    if (bucket_index >= node_count_) {
+        throw std::out_of_range("Invalid bucket index");
+    }
+
+    std::ifstream input(BucketPath(bucket_index), std::ios::binary);
+    if (!input) {
+        throw std::runtime_error("Path ORAM bucket file is missing");
+    }
+
+    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(input)),
+                               std::istreambuf_iterator<char>());
+    if (bytes.size() < sizeof(uint64_t)) {
+        throw std::runtime_error("Path ORAM bucket file is malformed");
+    }
+
+    core::Bucket bucket = core::Serializer::DeserializeBucket(bytes, Config::kBucketSize);
+    ValidateBucketShape(bucket, "stored");
+    return bucket;
+}
+
+void PathORAMServer::WriteBucketToDisk(size_t bucket_index, const core::Bucket& bucket) const {
+    if (bucket_index >= node_count_) {
+        throw std::out_of_range("Invalid bucket index");
+    }
+    ValidateBucketShape(bucket, "stored");
+
+    std::filesystem::create_directories(tree_dir_);
+    const auto bytes = core::Serializer::SerializeBucket(bucket);
+    std::ofstream output(BucketPath(bucket_index), std::ios::binary | std::ios::trunc);
+    if (!output) {
+        throw std::runtime_error("Path ORAM bucket file could not be opened for writing");
+    }
+    output.write(reinterpret_cast<const char*>(bytes.data()),
+                 static_cast<std::streamsize>(bytes.size()));
+    if (!output) {
+        throw std::runtime_error("Path ORAM bucket file write failed");
     }
 }
 
@@ -107,12 +193,10 @@ core::Bucket PathORAMServer::DecryptBucket(const std::vector<uint8_t>& encrypted
 }
 
 void PathORAMServer::HandleReadBucket(size_t bucket_index) {
-    if (bucket_index >= num_nodes_) {
-        throw std::out_of_range("Invalid bucket index");
-    }
+    ValidateInitialized();
 
     // Encrypt bucket
-    auto encrypted = EncryptBucket(tree_[bucket_index]);
+    auto encrypted = EncryptBucket(ReadBucketFromDisk(bucket_index));
 
     // Send size then data
     uint64_t size = encrypted.size();
@@ -122,9 +206,7 @@ void PathORAMServer::HandleReadBucket(size_t bucket_index) {
 }
 
 void PathORAMServer::HandleWriteBucket(size_t bucket_index) {
-    if (bucket_index >= num_nodes_) {
-        throw std::out_of_range("Invalid bucket index");
-    }
+    ValidateInitialized();
 
     // Receive size
     uint64_t size;
@@ -135,7 +217,7 @@ void PathORAMServer::HandleWriteBucket(size_t bucket_index) {
     net_io_->RecvData(encrypted.data(), size);
 
     // Decrypt and store
-    tree_[bucket_index] = DecryptBucket(encrypted);
+    WriteBucketToDisk(bucket_index, DecryptBucket(encrypted));
 }
 
 void PathORAMServer::HandleRequests() {
