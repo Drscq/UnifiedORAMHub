@@ -86,3 +86,15 @@
 - [x] Implementation 1: Add failing protocol-shape test
 - [x] Implementation 2: Batch Path ORAM read/write path requests
 - [x] Implementation 3: Run verification
+
+# Real C++ ORAM Delay Benchmark Task Tracker
+
+- [x] Brainstorming 1: Explore current branch and ORAM constraints
+- [x] Brainstorming 2: Select path-only real-execution C++ harness
+- [x] Brainstorming 3: Write design doc
+- [x] Planning 1: Write implementation plan
+- [x] Implementation 1: Add failing benchmark tests
+- [x] Implementation 2: Add C++ benchmark core and executable
+- [x] Implementation 3: Add script wrapper and docs
+- [x] Implementation 4: Run benchmark under prepared traffic limit
+- [x] Implementation 5: Run verification

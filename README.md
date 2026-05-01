@@ -120,6 +120,25 @@ python3 scripts/oram_tcp_benchmark.py \
   --format csv
 ```
 
+For the real C++ comparison with client computation, server-side generated path
+storage, AES-CTR encryption/decryption, and TCP communication under the active
+`tc` limiter, run:
+```bash
+python3 scripts/oram_real_delay_benchmark.py
+```
+
+This benchmark does not materialize the whole binary tree. It generates only the
+path data needed for each measured access, defaults to 480 accesses, and reports
+Path ORAM read/write path time against Ring ORAM online reads plus amortized
+eviction every `A = 48` accesses. Forward options to the C++ executable after
+`--`:
+```bash
+python3 scripts/oram_real_delay_benchmark.py -- \
+  --block-sizes-kib 4 8 16 \
+  --accesses 480 \
+  --format csv
+```
+
 ## Contributing
 We welcome contributions to UnifiedORAMHub! Please read our [CONTRIBUTING.md](/CONTRIBUTING.md) for guidelines on how to contribute.
 

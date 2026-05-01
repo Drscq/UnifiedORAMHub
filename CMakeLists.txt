@@ -100,6 +100,20 @@ target_link_libraries(oram_core PUBLIC
     OpenSSL::Crypto
 )
 
+add_library(oram_benchmark
+    src/benchmark/ORAMDelayBenchmark.cpp
+)
+target_link_libraries(oram_benchmark PUBLIC
+    oram_core
+)
+
+add_executable(oram_real_delay_benchmark
+    benchmarks/oram_real_delay_benchmark.cpp
+)
+target_link_libraries(oram_real_delay_benchmark PRIVATE
+    oram_benchmark
+)
+
 add_library(onion_ring_core
     src/onion_ring/TFHEAdapter.cpp
     src/onion_ring/HomOps.cpp
