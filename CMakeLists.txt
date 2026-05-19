@@ -14,15 +14,17 @@ FetchContent_Declare(
     tfhe
     GIT_REPOSITORY https://github.com/tfhe/tfhe.git
     GIT_TAG        v1.0.1
-    SOURCE_SUBDIR  src
 )
 set(ENABLE_TESTS OFF CACHE BOOL "" FORCE)
-# Disable the nayuki FFT backends: fft_processor_nayuki.cpp uses `1i` (a GNU
-# C imaginary suffix) which GCC 14 rejects in C++17 mode.  The spqlios
-# backend is always preferred on x86 anyway, so nayuki is dead code for us.
-set(ENABLE_NAYUKI_PORTABLE OFF CACHE BOOL "" FORCE)
+set(ENABLE_NAYUKI_PORTABLE ON  CACHE BOOL "" FORCE)
 set(ENABLE_NAYUKI_AVX      OFF CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(tfhe)
+set(ENABLE_SPQLIOS_AVX     ON  CACHE BOOL "" FORCE)
+set(ENABLE_SPQLIOS_FMA     ON  CACHE BOOL "" FORCE)
+FetchContent_GetProperties(tfhe)
+if(NOT tfhe_POPULATED)
+    FetchContent_Populate(tfhe)
+    add_subdirectory(${tfhe_SOURCE_DIR}/src ${tfhe_BINARY_DIR})
+endif()
 
 
 # fft_processor_nayuki.cpp uses the `1i` complex imaginary literal which is
@@ -32,7 +34,11 @@ FetchContent_MakeAvailable(tfhe)
 # The -std=gnu++17 flag appended last wins over the earlier -std=c++17.
 foreach(nayuki_target tfhe-fft-nayuki-portable tfhe-fft-nayuki-avx)
     if(TARGET ${nayuki_target})
-        target_compile_options(${nayuki_target} PRIVATE -std=gnu++17)
+        target_compile_options(${nayuki_target} PRIVATE
+            $<$<COMPILE_LANGUAGE:CXX>:-std=gnu++17>
+            $<$<COMPILE_LANGUAGE:CXX>:-include>
+            $<$<COMPILE_LANGUAGE:CXX>:${CMAKE_CURRENT_SOURCE_DIR}/cmake/tfhe_complex_literals.h>
+        )
     endif()
 endforeach()
 
@@ -59,7 +65,11 @@ foreach(tfhe_target
     endif()
 endforeach()
 
-if(TARGET tfhe-spqlios-fma)
+# The Onion Ring macro benchmark uses n=2048.  TFHE v1.0.1's SPQLIOS backend
+# asserts N == 1024, so prefer the portable backend when it is available.
+if(TARGET tfhe-nayuki-portable)
+    set(ONION_RING_TFHE_TARGET tfhe-nayuki-portable)
+elseif(TARGET tfhe-spqlios-fma)
     set(ONION_RING_TFHE_TARGET tfhe-spqlios-fma)
 elseif(TARGET tfhe-spqlios-avx)
     set(ONION_RING_TFHE_TARGET tfhe-spqlios-avx)
@@ -67,9 +77,8 @@ else()
     set(ONION_RING_TFHE_TARGET tfhe-nayuki-portable)
 endif()
 
-# Compiler warnings for this project only. These are intentionally added
-# after FetchContent_MakeAvailable(tfhe) so the external TFHE build does not
-# inherit our sanitizer policy.
+# Compiler warnings for this project only. These are intentionally added after
+# TFHE is added so the external build does not inherit our sanitizer policy.
 add_compile_options(
     -Wall -Wextra -Wpedantic -Werror
     $<$<CONFIG:Debug>:-fsanitize=address,undefined>

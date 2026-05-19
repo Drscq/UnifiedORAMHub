@@ -42,6 +42,13 @@ target_link_libraries(onion_ring_tests PRIVATE
 
 gtest_discover_tests(onion_ring_tests)
 
+add_executable(onion_ring_macro_benchmark
+    onion_ring/onion_ring_macro_benchmark.cpp
+)
+target_link_libraries(onion_ring_macro_benchmark PRIVATE
+    onion_ring_core
+)
+
 add_executable(ring_oram_tests
     ring_oram/ring_oram_test.cpp
 )

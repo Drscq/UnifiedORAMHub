@@ -10,6 +10,9 @@
 - [x] Task 8: Implement leaf refresh and complete the protocol
 - [x] Task 9: Run full verification
 - [x] Task 10: Prepare the optimization follow-up
+- [x] Macro Benchmark 1: Add Onion Ring TFHE macro-operation benchmark
+- [x] Macro Benchmark 2: Wire benchmark into CMake
+- [x] Macro Benchmark 3: Run build verification
 
 # Ring ORAM Task Tracker
 
